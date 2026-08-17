@@ -103,19 +103,62 @@ def export_jianying(task_id: str) -> None:
     raise NotImplementedError("M4 待实现")
 
 
+@app.command("catalog-import")
+def catalog_import() -> None:
+    """把 catalog.yaml 导入台账（人维护 YAML，机器用 SQLite）。"""
+    from . import catalog
+
+    added, updated = catalog.import_catalog()
+    typer.echo(f"✓ 台账导入完成: 新增 {added}, 更新 {updated}")
+
+
 @app.command("status")
 def status() -> None:
     """任务 × 阶段进度总览。"""
-    raise NotImplementedError("M1 待实现")
+    from . import catalog
+
+    rows = catalog.status_board()
+    if not rows:
+        typer.echo("（台账为空，尚未运行任何任务）")
+        return
+    icons = {"done": "✓", "failed": "✗", "running": "▶",
+             "gate_waiting": "⏸", "pending": "·"}
+    for r in rows:
+        typer.echo(f"{icons.get(r['status'], '?')} {r['task_id']:<24} {r['stage']:<10} "
+                   f"{r['status']:<12} 重试{r['retry_count']}  {r['message'] or ''}")
 
 
 @app.command("locate")
-def locate(task_id: str, open_dir: bool = False) -> None:
-    """按 task_id 直查全部关联路径；--open 直接在 Finder 打开。"""
-    raise NotImplementedError("M1 待实现")
+def locate(task_id: str, open_dir: bool = typer.Option(False, "--open", help="在 Finder 中打开任务目录")) -> None:
+    """按 task_id 直查全部关联路径。"""
+    from . import catalog
+
+    info = catalog.locate_task(task_id)
+    if not info["videos"]:
+        typer.echo(f"✗ 未找到任务: {task_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"task_id: {info['task_id']}")
+    for v in info["videos"]:
+        typer.echo(f"  素材[{v['seq']}] {v['video_id']}  {v['series']} {v['version'] or ''} {v['chapter'] or ''}")
+        typer.echo(f"    物料: {v['source_path']}")
+    typer.echo(f"  任务目录: {info['paths']['task_dir']}")
+    typer.echo(f"  成品目录: {info['paths']['output_dir']}")
+    if info["stages"]:
+        typer.echo("  阶段状态: " + ", ".join(f"{s['stage']}={s['status']}" for s in info["stages"]))
+    if open_dir:
+        import subprocess
+
+        subprocess.run(["open", str(db.PROJECT_ROOT / info["paths"]["task_dir"])])
 
 
 @app.command("find")
 def find(keyword: str) -> None:
     """按系列/版本/章节名模糊检索。"""
-    raise NotImplementedError("M1 待实现")
+    from . import catalog
+
+    rows = catalog.find_videos(keyword)
+    if not rows:
+        typer.echo(f"（无匹配: {keyword}）")
+        return
+    for r in rows:
+        typer.echo(f"{r['video_id']:<12} {r['series']} {r['version'] or ''} {r['chapter'] or ''}  → {r['source_path']}")
