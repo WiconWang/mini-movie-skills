@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>分镜板 · mini-movie-maker</title>
+<style>
+  :root { --bg:#1a1b1e; --card:#26272b; --line:#3a3b40; --fg:#e8e8ea; --dim:#9a9ba0; --accent:#6ea8fe; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.6 -apple-system,"PingFang SC",sans-serif; padding:20px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+  h1 { font-size:18px; }
+  .meta { color:var(--dim); font-size:12px; }
+  .clip { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; display:flex; gap:14px; }
+  .clip.raw_insert { border-color:#e0a458; }
+  .frames { display:flex; gap:6px; flex-shrink:0; }
+  .frames img { width:150px; border-radius:6px; display:block; }
+  .body { flex:1; min-width:0; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.E { background:#8e5cf7; } .badge.D { background:#3f8cff; } .badge.C { background:#2fbf71; }
+  .badge.B { background:#b8a23f; } .badge.A { background:#777; }
+  .badge.raw { background:#e0a458; color:#1a1b1e; }
+  .time { color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  .narr { margin:6px 0; font-size:15px; }
+  .ops button { background:#33353b; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 10px; font-size:12px; cursor:pointer; margin-right:6px; }
+  .ops button:hover { border-color:var(--accent); }
+  .cands { display:none; margin-top:8px; border-top:1px dashed var(--line); padding-top:8px; }
+  .cands.open { display:flex; gap:8px; flex-wrap:wrap; }
+  .cand { width:120px; cursor:pointer; border:2px solid transparent; border-radius:6px; padding:2px; }
+  .cand:hover { border-color:var(--accent); }
+  .cand img { width:100%; border-radius:4px; display:block; }
+  .cand .cmeta { font-size:11px; color:var(--dim); text-align:center; }
+  .range-edit { display:none; margin-top:8px; gap:8px; align-items:center; }
+  .range-edit.open { display:flex; }
+  .range-edit input { width:90px; background:#1f2024; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 8px; }
+  #exportbar { position:sticky; bottom:0; background:#222327; border-top:1px solid var(--line); padding:10px 20px; margin:20px -20px -20px; display:flex; gap:12px; align-items:center; }
+  #exportbar button { background:var(--accent); color:#111; border:none; border-radius:8px; padding:8px 18px; font-weight:600; cursor:pointer; }
+  #dirty { color:#e0a458; font-size:12px; }
+  #est { color:var(--dim); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1 id="title">分镜板</h1>
+    <div class="meta" id="subtitle"></div>
+  </div>
+  <div class="meta">闸口2 · 改完点底部「导出 EDL」交给 Agent 重跑</div>
+</header>
+<main id="board"></main>
+<div id="exportbar">
+  <button onclick="exportEDL()">导出 EDL（下载 edl.json）</button>
+  <span id="est"></span>
+  <span id="dirty"></span>
+</div>
+
+<script id="mmdata" type="application/json">__DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById('mmdata').textContent);
+let edl = DATA.edl;
+let dirty = false;
+
+document.getElementById('title').textContent = DATA.title || '分镜板';
+document.getElementById('subtitle').textContent =
+  `任务 ${DATA.task_id} · ${edl.clips.length} 个片段 · 目标 ${DATA.target_minutes || '?'} 分钟`;
+
+function fmt(t){ const m=Math.floor(t/60), s=(t%60).toFixed(1); return `${m}:${s.padStart(4,'0')}`; }
+function estDuration(){ return edl.clips.reduce((a,c)=>a+(c.end-c.start),0); }
+function refreshEst(){
+  document.getElementById('est').textContent = `预计成片 ${fmt(estDuration())}`;
+  document.getElementById('dirty').textContent = dirty ? '● 有未导出修改' : '';
+}
+
+function render(){
+  const board = document.getElementById('board');
+  board.innerHTML = '';
+  edl.clips.forEach((c, i) => {
+    const div = document.createElement('div');
+    div.className = 'clip' + (c.type === 'raw_insert' ? ' raw_insert' : '');
+    const badge = c.type === 'raw_insert'
+      ? '<span class="badge raw">高光·原声</span>'
+      : `<span class="badge ${c.class||'A'}">${c.class||'?'}级</span>`;
+    div.innerHTML = `
+      <div class="frames">${(c.frames||[]).map(f=>`<img src="${f}">`).join('')}</div>
+      <div class="body">
+        <div>${badge}<span class="time">${c.video_id} · ${fmt(c.start)} → ${fmt(c.end)}（${(c.end-c.start).toFixed(1)}s）</span></div>
+        <div class="narr">${c.text || c.note || ''}</div>
+        <div class="ops">
+          <button onclick="toggleCands(${i})">换镜头</button>
+          <button onclick="toggleRange(${i})">调区间</button>
+          <button onclick="insertRaw(${i})">＋在此后插高光段</button>
+          <button onclick="delClip(${i})">删除</button>
+        </div>
+        <div class="cands" id="cands-${i}">${(c.candidates||[]).map((k,j)=>`
+          <div class="cand" onclick="swap(${i},${j})">
+            <img src="${k.frame}"><div class="cmeta">${k.class}级 · ${fmt(k.start)}→${fmt(k.end)}</div>
+          </div>`).join('') || '<span class="meta">无候选</span>'}
+        </div>
+        <div class="range-edit" id="range-${i}">
+          起 <input id="rs-${i}" value="${c.start}"> 止 <input id="re-${i}" value="${c.end}">
+          <button onclick="applyRange(${i})">应用</button>
+        </div>
+      </div>`;
+    board.appendChild(div);
+  });
+  refreshEst();
+}
+
+function markDirty(){ dirty = true; refreshEst(); }
+function toggleCands(i){ document.getElementById(`cands-${i}`).classList.toggle('open'); }
+function toggleRange(i){ document.getElementById(`range-${i}`).classList.toggle('open'); }
+function swap(i, j){
+  const k = edl.clips[i].candidates[j];
+  edl.clips[i].start = k.start; edl.clips[i].end = k.end;
+  edl.clips[i].video_id = k.video_id || edl.clips[i].video_id;
+  edl.clips[i].class = k.class;
+  if (k.frames) edl.clips[i].frames = k.frames; else edl.clips[i].frames = [k.frame];
+  markDirty(); render();
+}
+function applyRange(i){
+  edl.clips[i].start = parseFloat(document.getElementById(`rs-${i}`).value);
+  edl.clips[i].end = parseFloat(document.getElementById(`re-${i}`).value);
+  markDirty(); render();
+}
+function delClip(i){ edl.clips.splice(i,1); markDirty(); render(); }
+function insertRaw(i){
+  const start = parseFloat(prompt('高光段起点（秒，源视频时间）', '0'));
+  const end = parseFloat(prompt('高光段终点（秒）', '0'));
+  if (!(end > start)) return;
+  edl.clips.splice(i+1, 0, { type:'raw_insert', video_id: edl.clips[i].video_id,
+    start, end, keep_audio:true, note:'人工插入高光段', frames:[] });
+  markDirty(); render();
+}
+function exportEDL(){
+  const blob = new Blob([JSON.stringify(edl, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'edl.json';
+  a.click();
+  dirty = false; refreshEst();
+}
+render();
+</script>
+</body>
+</html>
