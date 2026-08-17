@@ -46,14 +46,14 @@ mmm status                    # 台账就绪
 | CLI 管理命令 | ✅ 完成 | db-init / catalog-import / status / locate / find |
 | 阶段2 真机集成 | ⬜ 待物料 | ASR 跑真实视频 + script.jsonl → lines.json（M1 收尾） |
 | 阶段3 视觉理解 | ⬜ 待开始 | 需要 opencode zen 的 base_url + API key |
-| 分镜板 reviewer | ⬜ 待开始 | mock 数据即可开发 |
+| 分镜板 reviewer | ✅ 完成 | 固化 HTML 工具 + 构建器，浏览器实测通过 |
 | 阶段5~7 | ⬜ 未开始 | 依赖前序 |
 
 ## 三、待办任务清单（按优先级）
 
 1. **【等物料】M1 收尾**：游戏实录视频 + 规范 script.jsonl 到位 → ASR(small) → 对齐 → 覆盖率报告（验收线 ≥95%，时间戳误差 <0.5s）
 2. **【等密钥】阶段3 视觉理解原型**：zen 接入信息到位 → PV 抽帧喂 mimo-v2-omni → 验证描述/UI检测/分类质量
-3. **分镜板 reviewer 工具**：mock edl.json 驱动，闸口2 交互（换镜头/插 raw_insert/调区间）
+3. ~~分镜板 reviewer 工具~~（已完成 408f2b2）
 4. 合成管线原型：transform 滤镜链（放大裁 LOGO）、片头拼接、字幕烧录、BGM crossfade（可用 PV 验证）
 5. 阶段2 与 CLI 集成：`mmm run align <video_id>`（ASR→对齐→lines.json 一条龙）
 6. ASR 备选实测：mlx large-v3-turbo（可能兼顾速度与质量）
