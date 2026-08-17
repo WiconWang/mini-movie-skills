@@ -1,0 +1,23 @@
+# ===== 物料与产物（大体量/可重建，迁移后重新放置，不进 GIT）=====
+materials/
+workspace/
+tasks/
+output/
+assets/intros/
+assets/bgm/
+temp/
+
+# ===== 数据库（结构由 db/schema.sql 重建，数据由 catalog.yaml 导入 + 管线运行产生）=====
+*.sqlite
+*.sqlite-journal
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ===== 系统 =====
+.DS_Store
