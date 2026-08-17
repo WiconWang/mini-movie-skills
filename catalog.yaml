@@ -8,3 +8,8 @@ videos:
     version: "4.3"            # 可选，参与命名模板
     chapter: 罪人舞步旋        # 可选，参与命名模板
     path: materials/gs-043    # 必填
+  - video_id: gs-16-mjzd
+    series: 原神
+    version: "1.6"
+    chapter: 迷境之岛！无法预测的旅行
+    path: materials/gs-16-mjzd

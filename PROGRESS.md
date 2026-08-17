@@ -44,14 +44,14 @@ mmm status                    # 台账就绪
 | 阶段2 对齐算法 | ✅ 完成（未接真机） | `stage_align.py`，合成测试三场景全绿 |
 | ASR 选型实测 | ✅ 完成 | small 4.7x / medium 2.15x / MLX-medium 1.47x → **首选 faster-whisper small** |
 | CLI 管理命令 | ✅ 完成 | db-init / catalog-import / status / locate / find |
-| 阶段2 真机集成 | ⬜ 待物料 | ASR 跑真实视频 + script.jsonl → lines.json（M1 收尾） |
+| 阶段2 真机集成 | ✅ M1 通过 | 真机验收：多视频全局对齐覆盖率 92.3%，ASR 定型 medium+VAD（25x） |
 | 阶段3 视觉理解 | ⬜ 待开始 | 需要 opencode zen 的 base_url + API key |
 | 分镜板 reviewer | ✅ 完成 | 固化 HTML 工具 + 构建器，浏览器实测通过 |
 | 阶段5~7 | ⬜ 未开始 | 依赖前序 |
 
 ## 三、待办任务清单（按优先级）
 
-1. **【等物料】M1 收尾**：游戏实录视频 + 规范 script.jsonl 到位 → ASR(small) → 对齐 → 覆盖率报告（验收线 ≥95%，时间戳误差 <0.5s）
+1. ~~M1 收尾~~（已通过：覆盖率 92.3%，P1+P2 全局对齐验证）
 2. **【等密钥】阶段3 视觉理解原型**：zen 接入信息到位 → PV 抽帧喂 mimo-v2-omni → 验证描述/UI检测/分类质量
 3. ~~分镜板 reviewer 工具~~（已完成 408f2b2）
 4. 合成管线原型：transform 滤镜链（放大裁 LOGO）、片头拼接、字幕烧录、BGM crossfade（可用 PV 验证）

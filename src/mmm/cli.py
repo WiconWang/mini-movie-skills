@@ -36,7 +36,7 @@ def task_create(videos: str, template: str = "") -> None:
 
 @run_app.command("shots")
 def run_shots(
-    video_id: str = "",
+    video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
     threshold: float = typer.Option(0.3, "--threshold", "-t", help="场景突变阈值"),
 ) -> None:
@@ -62,9 +62,36 @@ def run_shots(
 
 
 @run_app.command("align")
-def run_align(video_id: str) -> None:
-    """阶段2：ASR + 台词对齐 → lines.json（含覆盖率报告）。"""
-    raise NotImplementedError("M1 待实现")
+def run_align(
+    video_id: str = typer.Argument(""),
+    path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用）"),
+    script: str = typer.Option("", "--script", help="台词 JSONL 路径（冒烟测试用）"),
+    model: str = typer.Option("small", "--model", "-m", help="ASR 模型档位"),
+) -> None:
+    """阶段2：ASR + 台词对齐 → asr.json / lines.json（含覆盖率报告）。"""
+    from pathlib import Path
+
+    from . import stage_asr
+
+    if path and script:
+        video, script_p = Path(path), Path(script)
+        out_dir = db.PROJECT_ROOT / "workspace" / "_smoke" / video.stem
+    else:
+        base = db.PROJECT_ROOT / "materials" / video_id
+        video, script_p = base / "source.mp4", base / "script.jsonl"
+        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+    for p in (video, script_p):
+        if not p.exists():
+            typer.echo(f"✗ 文件不存在: {p}", err=True)
+            raise typer.Exit(1)
+
+    report = stage_asr.run(video, script_p, out_dir, model)
+    typer.echo(f"✓ {video.name}: 总行数 {report['total']}, "
+               f"matched {report['matched']}, interpolated {report['interpolated']}, "
+               f"unmatched {report['unmatched']}, 覆盖率 {report['coverage']:.1%}")
+    if report["coverage"] < 0.85:
+        typer.echo("⚠ 覆盖率低于 85%，建议人工核查物料（设计文档 §6 风险表）")
+    typer.echo(f"  产物: {out_dir}/asr.json, lines.json")
 
 
 @run_app.command("vision")
@@ -162,3 +189,7 @@ def find(keyword: str) -> None:
         return
     for r in rows:
         typer.echo(f"{r['video_id']:<12} {r['series']} {r['version'] or ''} {r['chapter'] or ''}  → {r['source_path']}")
+
+
+if __name__ == "__main__":
+    app()

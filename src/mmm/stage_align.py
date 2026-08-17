@@ -70,10 +70,12 @@ def align(script_lines: list[dict], asr_words: list[AsrWord]) -> dict:
 
     # 2. 字符级序列对齐
     sm = difflib.SequenceMatcher(a=script_text, b=asr_text, autojunk=False)
-    lines: list[AlignedLine] = [
-        AlignedLine(id=i + 1, text=l["text"], speaker=l.get("speaker"))
-        for i, l in enumerate(script_lines)
-    ]
+    lines: list[AlignedLine] = []
+    for i, l in enumerate(script_lines):
+        line = AlignedLine(id=i + 1, text=l["text"], speaker=l.get("speaker"))
+        if l.get("voiced") is False:
+            line.align = "unvoiced"   # 无配音行（如主角选项）：保留供写稿，不参与对齐
+        lines.append(line)
 
     # 3. 匹配块 → 行级时间戳
     # 行内任一字符命中匹配块，即可用该块内本行字符的首尾定时间；
@@ -94,6 +96,8 @@ def align(script_lines: list[dict], asr_words: list[AsrWord]) -> dict:
             line_hits[li] = line_hits.get(li, 0) + 1
 
     for li, spans in line_spans.items():
+        if lines[li].align == "unvoiced":
+            continue
         if line_hits[li] / max(line_lens[li], 1) < MIN_MATCH_RATIO:
             continue  # 命中率过低，留给插值/未匹配判定
         lines[li].start = min(s[0] for s in spans)
@@ -107,12 +111,16 @@ def align(script_lines: list[dict], asr_words: list[AsrWord]) -> dict:
         if not (0 < gap <= MAX_INTERPOLATE_GAP):
             continue
         t0, t1 = lines[a].end, lines[b].start
-        gap_chars = sum(len(_normalize(lines[i].text)) for i in range(a + 1, b))
+        # 预估时长只计需要发声的行（unvoiced 行不占音频时间）
+        gap_chars = sum(len(_normalize(lines[i].text)) for i in range(a + 1, b)
+                        if lines[i].align == "unmatched")
         est_dur = gap_chars / SPEECH_CHARS_PER_SEC
         if (t1 - t0) < est_dur * MIN_TIME_FIT:
             continue  # 时间装不下 → 这些行不在音频里，保持 unmatched
         cursor = t0
         for i in range(a + 1, b):
+            if lines[i].align != "unmatched":
+                continue  # unvoiced 行不占音频时间，不插值
             share = len(_normalize(lines[i].text)) / max(gap_chars, 1)
             lines[i].start = round(cursor, 2)
             lines[i].end = round(cursor + (t1 - t0) * share, 2)
@@ -121,19 +129,24 @@ def align(script_lines: list[dict], asr_words: list[AsrWord]) -> dict:
 
     matched = sum(1 for l in lines if l.align == "matched")
     interpolated = sum(1 for l in lines if l.align == "interpolated")
+    unvoiced = sum(1 for l in lines if l.align == "unvoiced")
     total = len(lines)
+    voiced_total = total - unvoiced   # 覆盖率分母不含无配音行
     return {
         "lines": [
-            {"id": l.id, "start": l.start, "end": l.end, "text": l.text,
-             "speaker": l.speaker, "align": l.align}
+            {"id": l.id, "start": round(l.start, 2) if l.start is not None else None,
+             "end": round(l.end, 2) if l.end is not None else None,
+             "text": l.text, "speaker": l.speaker, "align": l.align}
             for l in lines
         ],
         "report": {
             "total": total,
+            "voiced_total": voiced_total,
             "matched": matched,
             "interpolated": interpolated,
-            "unmatched": total - matched - interpolated,
-            "coverage": round((matched + interpolated) / max(total, 1), 4),
+            "unmatched": voiced_total - matched - interpolated,
+            "unvoiced": unvoiced,
+            "coverage": round((matched + interpolated) / max(voiced_total, 1), 4),
         },
     }
 
