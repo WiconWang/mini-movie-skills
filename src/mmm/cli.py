@@ -95,12 +95,27 @@ def run_align(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用）"),
     script: str = typer.Option("", "--script", help="台词 JSONL 路径（冒烟测试用）"),
-    model: str = typer.Option("small", "--model", "-m", help="ASR 模型档位"),
+    model: str = typer.Option("medium", "--model", "-m", help="ASR 模型档位"),
+    task: str = typer.Option("", "--task", help="任务模式：多视频全局对齐（台词横跨全部视频）"),
 ) -> None:
     """阶段2：ASR + 台词对齐 → asr.json / lines.json（含覆盖率报告）。"""
     from pathlib import Path
 
     from . import stage_asr
+
+    if task:
+        report = stage_asr.align_task(task, model)
+        typer.echo(f"✓ 任务 {task} 全局对齐: 总行数 {report['total']}, "
+                   f"matched {report['matched']}, interpolated {report['interpolated']}, "
+                   f"unmatched {report['unmatched']}, unvoiced {report['unvoiced']}, "
+                   f"覆盖率 {report['coverage']:.1%}")
+        for vid, r in report["per_video"].items():
+            typer.echo(f"  分段 {vid}: {r['matched']} matched / {r['voiced_total']} 行, "
+                       f"覆盖率 {r['coverage']:.1%}")
+        if report["coverage"] < 0.85:
+            typer.echo("⚠ 覆盖率低于 85%，建议人工核查物料（设计文档 §6 风险表）")
+        db.record_job(task, "align", "done", f"覆盖率 {report['coverage']:.1%}")
+        return
 
     if path and script:
         video, script_p = Path(path), Path(script)
@@ -227,7 +242,7 @@ def run_select(
     if task:
         out_dir = db.PROJECT_ROOT / "tasks" / task
         summary = stage_select.run(out_dir, task, timeline_name="global_timeline.json",
-                                   chars_per_sec=chars_per_sec)
+                                   exclude_task=task, chars_per_sec=chars_per_sec)
         db.record_job(task, "select", "gate_waiting", "等待闸口2人工审阅 storyboard.html")
         label = task
     else:
@@ -240,7 +255,10 @@ def run_select(
                                    workspace_of=lambda _vid: out_dir,
                                    chars_per_sec=chars_per_sec)
     typer.echo(f"✓ EDL 生成完成: {summary['clips']} 片段, "
-               f"源视频总长 {summary['total_source_seconds']:.1f}s")
+               f"源视频总长 {summary['total_source_seconds']:.1f}s, "
+               f"复用排除 {summary['excluded_used_shots']} 个已登记镜头")
+    if summary["needs_review"]:
+        typer.echo(f"  ⚠ {summary['needs_review']} 个片段候选被占用耗尽，需闸口2人工复核")
     typer.echo(f"  产物: {summary['edl']}, {summary['storyboard']}")
     typer.echo("  ⏸ 闸口2：请审阅 storyboard.html，确认或调整后再继续阶段7")
 
@@ -283,10 +301,12 @@ def run_render(
             typer.echo(f"✗ 视频不存在: {p}（{vid}）", err=True)
             raise typer.Exit(1)
 
-    summary = stage_render.run(work_dir, videos, out_path)
+    summary = stage_render.run(work_dir, videos, out_path, task_id=task or "")
     typer.echo(f"✓ 渲染完成: {summary['clips']} 片段, 成片时长 {summary['duration']}s")
     typer.echo(f"  产物: {summary['output']}")
     if task:
+        typer.echo(f"  已登记 footage_usage: {summary['footage_registered']} 个镜头"
+                   f"（edl.final.json 已归档）")
         db.record_job(task, "render", "done", summary["output"])
 
 

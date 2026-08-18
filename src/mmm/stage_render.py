@@ -78,8 +78,13 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
     return seg
 
 
-def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None) -> dict:
-    """按 edl.json 渲染成片。videos: video_id → 源视频路径（多视频任务各片段可来自不同源）。"""
+def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
+        task_id: str = "") -> dict:
+    """按 edl.json 渲染成片。videos: video_id → 源视频路径（多视频任务各片段可来自不同源）。
+
+    task_id 非空时：渲染成功后登记 footage_usage（以导出时 EDL 为准）
+    并归档 edl.final.json 到输出目录（设计文档 §4 阶段7 单向数据流）。
+    """
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
     out_path = out_path or work_dir / "render.mp4"
@@ -107,4 +112,14 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None) -
     _run(["ffmpeg", "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
           "-i", str(list_file), "-c", "copy", str(out_path)])
 
-    return {"clips": len(clips), "duration": round(total, 1), "output": str(out_path)}
+    registered = 0
+    if task_id:
+        from .catalog import register_usage
+
+        registered = register_usage(task_id, clips)
+        # 归档最终 EDL（复盘/二期素材库用；剪映手调不回流，以此为准）
+        (out_path.parent / "edl.final.json").write_text(
+            json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {"clips": len(clips), "duration": round(total, 1),
+            "output": str(out_path), "footage_registered": registered}

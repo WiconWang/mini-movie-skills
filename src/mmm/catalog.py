@@ -109,6 +109,36 @@ def task_videos(task_id: str) -> list[dict]:
            WHERE m.task_id = ? ORDER BY m.seq""", (task_id,)).fetchall()]
 
 
+def used_shots(exclude_task: str = "") -> set[tuple[str, int]]:
+    """已被占用登记的 (video_id, shot_id) 集合；exclude_task 排除本任务（允许重跑选片）。"""
+    conn = init_db()
+    if exclude_task:
+        rows = conn.execute(
+            "SELECT video_id, shot_id FROM footage_usage WHERE task_id != ?",
+            (exclude_task,)).fetchall()
+    else:
+        rows = conn.execute("SELECT video_id, shot_id FROM footage_usage").fetchall()
+    return {(r[0], r[1]) for r in rows}
+
+
+def register_usage(task_id: str, clips: list[dict]) -> int:
+    """按导出时 EDL 登记片段使用（镜头级，幂等：先清本任务旧登记再写入）。
+
+    设计文档 §4 阶段6：以导出时 EDL 为准——闸口2 人工调整后的 edl.json 是事实源。
+    """
+    conn = init_db()
+    conn.execute("DELETE FROM footage_usage WHERE task_id=?", (task_id,))
+    n = 0
+    for c in clips:
+        for sid in c.get("shot_ids", []):
+            conn.execute(
+                "INSERT OR IGNORE INTO footage_usage (video_id, shot_id, task_id) VALUES (?,?,?)",
+                (c["video_id"], sid, task_id))
+            n += 1
+    conn.commit()
+    return n
+
+
 
 def import_catalog(yaml_path: Path = CATALOG_YAML) -> tuple[int, int]:
     """把 catalog.yaml 导入台账。返回 (新增数, 更新数)。"""

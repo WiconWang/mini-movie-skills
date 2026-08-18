@@ -51,6 +51,8 @@ mmm status                    # 台账就绪
 | 阶段6 选片+EDL | ✅ MVP通过 | `stage_select.py` + `run_select` CLI；E→A 优先级选取 + 时长匹配；分镜板已生成；TTS 时长暂按字数估算，footage_usage 落 JSON 未接台账 |
 | 阶段7 合成导出 | ✅ MVP通过 | `stage_render.py` + `run render` CLI；macOS say(Tingting) 占位 TTS + ffmpeg 片段级音画对齐 + concat 直出；冒烟 20片段→120s MP4；待补：云TTS/BGM/字幕/transform/片头/剪映导出 |
 | 台账闭环 | ✅ 完成 | `mmm add`（物料校验+台词预检）、`task-create`（task_map+task.json+系列配置继承）、阶段4.5 全局时间轴合流 `build_global`（offset 表，合成双视频测试通过）、jobs 打点、narrate/select/render 均支持 task 模式 |
+| footage_usage 闭环 | ✅ 完成 | 选片查台账排除已占用镜头（耗尽兜底标 needs_review）；导出时按 EDL 登记 + 归档 edl.final.json |
+| 多视频全局对齐 | ✅ 完成 | `run align --task`：逐视频 ASR 断点复用 → offset 拼全局词流 → 整份台词一次对齐 → 拆回各视频本地时间；合成双视频测试通过；顺带修复 load_script 丢失 voiced 字段的 bug |
 
 ## 三、待办任务清单（按优先级）
 

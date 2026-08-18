@@ -42,7 +42,8 @@ def load_script(script_path: Path) -> list[dict]:
             raise ValueError(f"{script_path.name} 第{i}行 JSON 解析失败: {e}")
         if not obj.get("text"):
             raise ValueError(f"{script_path.name} 第{i}行 text 为空")
-        lines.append({"text": obj["text"], "speaker": obj.get("speaker")})
+        lines.append({"text": obj["text"], "speaker": obj.get("speaker"),
+                      "voiced": obj.get("voiced", True)})
     return lines
 
 
@@ -64,3 +65,114 @@ def run(video: Path, script: Path, out_dir: Path, model_size: str = ASR_MODEL_SI
     (out_dir / "lines.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result["report"]
+
+
+def ensure_asr(video: Path, out_dir: Path, model_size: str = ASR_MODEL_SIZE) -> list[dict]:
+    """确保 asr.json 存在（多视频任务共享：已转录过就直接读，避免重复跑 ASR）。"""
+    asr_path = out_dir / "asr.json"
+    if asr_path.exists():
+        return json.loads(asr_path.read_text())["words"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    words = transcribe_words(video, model_size)
+    asr_path.write_text(
+        json.dumps({"video": video.name, "model": model_size, "words": words},
+                   ensure_ascii=False, indent=2), encoding="utf-8")
+    return words
+
+
+def _video_duration(video: Path) -> float:
+    import subprocess
+
+    out = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(video)],
+        check=True, capture_output=True, text=True).stdout.strip()
+    return float(out)
+
+
+def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
+    """多视频任务全局对齐（设计文档 §4 阶段2 多视频任务的对齐）。
+
+    流程：逐视频确保 ASR（asr.json 断点复用）→ 按 seq 以 offset 拼成全局词流
+    → 任务级完整台词一次对齐 → 按 offset 拆回各视频 lines.json（本地时间）。
+    台词来源：task.json 的 script_path（任务级整份台词），缺省取首个视频的台词。
+    """
+    from .catalog import task_videos
+    from .db import PROJECT_ROOT
+    from .stage_align import AsrWord, align
+
+    videos = task_videos(task_id)
+    if not videos:
+        raise KeyError(f"任务无关联素材: {task_id}")
+
+    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_cfg = {}
+    cfg_path = task_dir / "task.json"
+    if cfg_path.exists():
+        task_cfg = json.loads(cfg_path.read_text())
+    script_rel = task_cfg.get("script_path") or videos[0].get("script_path")
+    if not script_rel:
+        raise KeyError(f"任务 {task_id} 无台词来源（task.json script_path 或素材 script_path）")
+    script_path = PROJECT_ROOT / script_rel
+
+    # 1. 逐视频 ASR + 拼接全局词流
+    offsets: list[tuple[str, float, float]] = []   # (video_id, offset, duration)
+    global_words: list[AsrWord] = []
+    offset = 0.0
+    for v in videos:
+        vid = v["video_id"]
+        video = PROJECT_ROOT / v["source_path"] / "source.mp4"
+        work = PROJECT_ROOT / "workspace" / vid
+        words = ensure_asr(video, work, model_size)
+        for w in words:
+            global_words.append(AsrWord(text=w["text"],
+                                        start=w["start"] + offset,
+                                        end=w["end"] + offset))
+        dur = _video_duration(video)
+        offsets.append((vid, offset, dur))
+        offset += dur
+
+    # 2. 全局对齐
+    script_lines = load_script(script_path)
+    result = align(script_lines, global_words)
+
+    # 3. 按 offset 拆回各视频 lines.json（本地时间，保持原 id 供全局时间轴使用）
+    per_video: dict[str, list[dict]] = {vid: [] for vid, _, _ in offsets}
+    for line in result["lines"]:
+        if line["start"] is None:
+            # 未匹配行归到台词顺序上最近的已匹配视频；找不到则归首个视频
+            line["video_id"] = offsets[0][0]
+            per_video[offsets[0][0]].append(line)
+            continue
+        vid, off = next(
+            ((vid, off) for vid, off, dur in offsets if off <= line["start"] < off + dur),
+            (offsets[-1][0], offsets[-1][1]))
+        line["video_id"] = vid
+        line["local_start"] = round(line["start"] - off, 2)
+        line["local_end"] = round(line["end"] - off, 2)
+        per_video[vid].append({**line, "start": line["local_start"], "end": line["local_end"]})
+
+    for vid, lines in per_video.items():
+        work = PROJECT_ROOT / "workspace" / vid
+        work.mkdir(parents=True, exist_ok=True)
+        matched = sum(1 for l in lines if l["align"] == "matched")
+        interp = sum(1 for l in lines if l["align"] == "interpolated")
+        voiced = sum(1 for l in lines if l["align"] != "unvoiced")
+        sub = {"lines": lines,
+               "report": {"total": len(lines), "voiced_total": voiced,
+                          "matched": matched, "interpolated": interp,
+                          "unmatched": voiced - matched - interp,
+                          "coverage": round((matched + interp) / max(voiced, 1), 4)}}
+        (work / "lines.json").write_text(
+            json.dumps(sub, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 全局结果也归档到任务目录（排查用）
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "align_global.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report = dict(result["report"])
+    report["per_video"] = {vid: json.loads(
+        (PROJECT_ROOT / "workspace" / vid / "lines.json").read_text())["report"]
+        for vid, _, _ in offsets}
+    return report

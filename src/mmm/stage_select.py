@@ -7,7 +7,7 @@ MVP 约定：
 - 单视频任务，video_id 直接取自调用参数；
 - TTS 时长按中文字符估算（默认 4.5 字/秒），尚未接入真实 TTS；
 - 不考虑 raw_insert（闸口2 人工插入）；
-- footage_usage 写入暂以日志/JSON 记录，未接台账（TODO）。
+- footage_usage：选片时查台账排除已占用镜头，导出时（stage_render）按 EDL 登记。
 """
 
 from __future__ import annotations
@@ -30,11 +30,24 @@ def _estimate_duration(text: str, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) 
     return max(len(text) / chars_per_sec, 1.0) + 0.3
 
 
-def _collect_candidates(shots: list[dict], t0: float, t1: float) -> list[dict]:
-    """收集与解说句时间区间重叠的镜头，并按 E→A 排序。"""
+def _collect_candidates(shots: list[dict], t0: float, t1: float,
+                        used: set[tuple[str, int]] | None = None,
+                        default_video_id: str = "") -> tuple[list[dict], bool]:
+    """收集与解说句时间区间重叠的镜头，按 E→A 排序；剔除 footage_usage 已占用镜头。
+
+    返回 (候选列表, 是否兜底)。兜底 = 排除占用后候选耗尽，放回全部候选并标记人工复核。
+    """
     cands = [s for s in shots if _overlaps(s["start"], s["end"], t0, t1)]
+    exhausted = False
+    if used:
+        fresh = [s for s in cands
+                 if (s.get("video_id") or default_video_id, s["id"]) not in used]
+        if fresh:
+            cands = fresh
+        elif cands:
+            exhausted = True   # 候选被占用耗尽 → 闸口2 人工复核（设计文档 §4 阶段6 冲突兜底）
     cands.sort(key=lambda s: CLASS_RANK.get(s.get("class", "A"), 4))
-    return cands
+    return cands, exhausted
 
 
 def _pick_clip(candidates: list[dict], t0: float, t1: float,
@@ -86,7 +99,8 @@ def _frame_paths(shot_id: int, ws: Path) -> list[str]:
 
 
 def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
-              workspace_of=None, *, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
+              workspace_of=None, *, used_shots: set[tuple[str, int]] | None = None,
+              chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
     """根据解说稿生成 EDL。
 
     多视频全局时间轴：shot/line 自带 video_id 与 local_start/local_end，
@@ -116,7 +130,8 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
         t1 = max(l["end"] for l in timed)
         target_dur = _estimate_duration(n["text"], chars_per_sec)
 
-        candidates = _collect_candidates(shots, t0, t1)
+        candidates, exhausted = _collect_candidates(
+            shots, t0, t1, used_shots, default_video_id)
         selected, all_cands = _pick_clip(candidates, t0, t1, target_dur)
 
         if not selected:
@@ -137,7 +152,7 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
         local_start = round(clip_start - off, 2)
         local_end = round(clip_end - off, 2)
 
-        clips.append({
+        clip = {
             "type": "narration_clip",
             "narration_id": n["id"],
             "text": n["text"],
@@ -159,7 +174,10 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
                 }
                 for c in all_cands[:5]
             ],
-        })
+        }
+        if exhausted:
+            clip["needs_review"] = True   # 候选被占用耗尽，闸口2 人工复核（可强制放行）
+        clips.append(clip)
 
         for s in selected:
             if s["shot_id"] is not None:
@@ -173,12 +191,15 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
 
 
 def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
-        workspace_of=None, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
+        workspace_of=None, exclude_task: str = "",
+        chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
     """从目录读取 narration.json + 时间轴，产出 edl.json + storyboard.html。
 
     单视频冒烟：work_dir=workspace/{vid}，timeline_name=timeline.json；
     任务模式：work_dir=tasks/{task_id}，timeline_name=global_timeline.json。
+    exclude_task：复用排除时豁免本任务（允许重跑选片不被自己的旧登记卡住）。
     """
+    from .catalog import used_shots
     from .db import PROJECT_ROOT
 
     narration_path = work_dir / "narration.json"
@@ -186,8 +207,9 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
     narration = json.loads(narration_path.read_text())["narration"]
     timeline = json.loads(timeline_path.read_text())
 
+    used = used_shots(exclude_task=exclude_task)
     edl = build_edl(timeline, narration, video_id, workspace_of,
-                    chars_per_sec=chars_per_sec)
+                    used_shots=used, chars_per_sec=chars_per_sec)
     (work_dir / "edl.json").write_text(
         json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -201,6 +223,8 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
 
     return {
         "clips": len(edl["clips"]),
+        "needs_review": sum(1 for c in edl["clips"] if c.get("needs_review")),
+        "excluded_used_shots": len(used),
         "total_source_seconds": round(sum(c["end"] - c["start"] for c in edl["clips"]), 2),
         "edl": str(work_dir / "edl.json"),
         "storyboard": str(storyboard_path),
