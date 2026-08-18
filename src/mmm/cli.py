@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import typer
 
 from . import db
@@ -12,6 +13,16 @@ from . import db
 app = typer.Typer(help="mini-movie-maker：长视频浓缩工作流", no_args_is_help=True)
 run_app = typer.Typer(help="分阶段执行管线（阶段1~7）")
 app.add_typer(run_app, name="run")
+
+
+def _parse_bgm_paths(bgm: str) -> list[str]:
+    """解析 --bgm 参数；文件名可含逗号，用分号或换行分隔，逗号仅作兼容。"""
+    if not bgm:
+        return []
+    # 优先按分号/换行分隔；如果没有，才退回到逗号（兼容旧用法）
+    if ";" in bgm or "\n" in bgm:
+        return [p.strip() for p in re.split(r"[;\n]", bgm) if p.strip()]
+    return [p.strip() for p in bgm.split(",") if p.strip()]
 
 
 def _render_title(cfg: dict) -> str:
@@ -289,7 +300,8 @@ def run_render(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     video: str = typer.Option("", "--video", help="直接给视频路径（冒烟测试用）"),
-    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频"),
+    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频 + 命名模板 + transform + BGM"),
+    bgm: str = typer.Option("", "--bgm", help="BGM 播放列表（逗号分隔路径），缺省用 task.json bgm_playlist"),
 ) -> None:
     """阶段7 导出器A：ffmpeg 直出 MP4（MVP：本机 say 占位 TTS）。"""
     from pathlib import Path
@@ -306,14 +318,21 @@ def run_render(
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{out_name}.mp4"
         work_dir = task_dir
+        # BGM：CLI --bgm 优先，否则用 task.json bgm_playlist
+        from . import stage_bgm
+
+        bgm_list = _parse_bgm_paths(bgm) if bgm else cfg.get("bgm_playlist", [])
+        bgm_path = None  # stage_render 内部按真实时长生成
     elif path and video:
         work_dir, video_p = Path(path), Path(video)
         videos = {work_dir.name: video_p}
         out_path = None
+        bgm_list = _parse_bgm_paths(bgm)
     elif video_id:
         work_dir = db.PROJECT_ROOT / "workspace" / video_id
         videos = {video_id: db.PROJECT_ROOT / "materials" / video_id / "source.mp4"}
         out_path = None
+        bgm_list = _parse_bgm_paths(bgm)
     else:
         typer.echo("✗ 必须提供 --task 或 video_id 或 --path + --video", err=True)
         raise typer.Exit(1)
@@ -326,8 +345,11 @@ def run_render(
             typer.echo(f"✗ 视频不存在: {p}（{vid}）", err=True)
             raise typer.Exit(1)
 
-    summary = stage_render.run(work_dir, videos, out_path, task_id=task or "")
+    summary = stage_render.run(work_dir, videos, out_path, task_id=task or "",
+                               bgm_playlist=bgm_list if bgm_list else None)
     typer.echo(f"✓ 渲染完成: {summary['clips']} 片段, 成片时长 {summary['duration']}s")
+    if summary.get("bgm"):
+        typer.echo(f"  BGM: {summary['bgm']}")
     typer.echo(f"  产物: {summary['output']}")
     if task:
         typer.echo(f"  已登记 footage_usage: {summary['footage_registered']} 个镜头"

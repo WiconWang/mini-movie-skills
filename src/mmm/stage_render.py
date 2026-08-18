@@ -91,8 +91,27 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
     return seg
 
 
+def _mix_with_bgm(video: Path, bgm: Path, out: Path) -> None:
+    """把视频轨与 BGM 轨混音（BGM 已 ducking 处理，直接 amix 即可）。"""
+    _run([
+        "ffmpeg", "-y", "-v", "quiet",
+        "-i", str(video), "-i", str(bgm),
+        "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[a]",
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+        str(out),
+    ])
+
+
+def _bgm_duck_regions(clips: list[dict]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """从 EDL 提取 narration 与 raw_insert 区间（全局时间）。"""
+    narration = [(c["start"], c["end"]) for c in clips if c.get("type") == "narration_clip"]
+    raw_insert = [(c["start"], c["end"]) for c in clips if c.get("type") == "raw_insert"]
+    return narration, raw_insert
+
+
 def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
-        task_id: str = "") -> dict:
+        task_id: str = "", bgm_playlist: list[str] | None = None) -> dict:
     """按 edl.json 渲染成片。videos: video_id → 源视频路径（多视频任务各片段可来自不同源）。
 
     task_id 非空时：渲染成功后登记 footage_usage（以导出时 EDL 为准）
@@ -133,8 +152,24 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     # concat（各片段编码参数一致，可 -c copy 无损拼接；路径需绝对，避免相对基准歧义）
     list_file = seg_dir / "concat.txt"
     list_file.write_text("".join(f"file '{p.resolve()}'\n" for p in seg_files))
+    raw_path = out_path.with_suffix(".raw" + out_path.suffix) if out_path else work_dir / "render.raw.mp4"
     _run(["ffmpeg", "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
-          "-i", str(list_file), "-c", "copy", str(out_path)])
+          "-i", str(list_file), "-c", "copy", str(raw_path)])
+
+    # 若有 BGM 配置，生成与成片等长的 BGM 轨并混音
+    bgm_path: Path | None = None
+    if bgm_playlist:
+        from . import stage_bgm
+
+        narration_regions, raw_regions = _bgm_duck_regions(clips)
+        bgm_path = stage_bgm.build_bgm_track(
+            bgm_playlist, total,
+            narration_regions=narration_regions,
+            raw_insert_regions=raw_regions,
+            out_path=out_path.parent / "bgm.wav" if out_path else work_dir / "bgm.wav",
+        )
+        _mix_with_bgm(raw_path, bgm_path, out_path)
+        raw_path.unlink(missing_ok=True)
 
     registered = 0
     if task_id:
@@ -146,4 +181,5 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return {"clips": len(clips), "duration": round(total, 1),
-            "output": str(out_path), "footage_registered": registered}
+            "output": str(out_path), "footage_registered": registered,
+            "bgm": str(bgm_path) if bgm_path else None}
