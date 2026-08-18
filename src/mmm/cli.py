@@ -300,8 +300,9 @@ def run_render(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     video: str = typer.Option("", "--video", help="直接给视频路径（冒烟测试用）"),
-    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频 + 命名模板 + transform + BGM"),
-    bgm: str = typer.Option("", "--bgm", help="BGM 播放列表（逗号分隔路径），缺省用 task.json bgm_playlist"),
+    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频 + 命名模板 + transform + BGM + 字幕"),
+    bgm: str = typer.Option("", "--bgm", help="BGM 播放列表（分号分隔路径），缺省用 task.json bgm_playlist"),
+    subtitle: str = typer.Option("", "--subtitle", help="字幕模式 overlay/letterbox/none，缺省用 task.json subtitle_mode"),
 ) -> None:
     """阶段7 导出器A：ffmpeg 直出 MP4（MVP：本机 say 占位 TTS）。"""
     from pathlib import Path
@@ -322,17 +323,19 @@ def run_render(
         from . import stage_bgm
 
         bgm_list = _parse_bgm_paths(bgm) if bgm else cfg.get("bgm_playlist", [])
-        bgm_path = None  # stage_render 内部按真实时长生成
+        subtitle_mode = subtitle or cfg.get("subtitle_mode", "overlay")
     elif path and video:
         work_dir, video_p = Path(path), Path(video)
         videos = {work_dir.name: video_p}
         out_path = None
         bgm_list = _parse_bgm_paths(bgm)
+        subtitle_mode = subtitle or "overlay"
     elif video_id:
         work_dir = db.PROJECT_ROOT / "workspace" / video_id
         videos = {video_id: db.PROJECT_ROOT / "materials" / video_id / "source.mp4"}
         out_path = None
         bgm_list = _parse_bgm_paths(bgm)
+        subtitle_mode = subtitle or "overlay"
     else:
         typer.echo("✗ 必须提供 --task 或 video_id 或 --path + --video", err=True)
         raise typer.Exit(1)
@@ -346,7 +349,8 @@ def run_render(
             raise typer.Exit(1)
 
     summary = stage_render.run(work_dir, videos, out_path, task_id=task or "",
-                               bgm_playlist=bgm_list if bgm_list else None)
+                               bgm_playlist=bgm_list if bgm_list else None,
+                               subtitle_mode=subtitle_mode)
     typer.echo(f"✓ 渲染完成: {summary['clips']} 片段, 成片时长 {summary['duration']}s")
     if summary.get("bgm"):
         typer.echo(f"  BGM: {summary['bgm']}")

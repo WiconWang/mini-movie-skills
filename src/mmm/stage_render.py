@@ -110,8 +110,49 @@ def _bgm_duck_regions(clips: list[dict]) -> tuple[list[tuple[float, float]], lis
     return narration, raw_insert
 
 
+def _has_ass_filter() -> bool:
+    """检测本机 ffmpeg 是否支持 ass/subtitles 滤镜。"""
+    try:
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                           capture_output=True, text=True, check=True)
+        lines = r.stdout.splitlines()
+        # 精确匹配滤镜名（行首格式如 "... ass" 或 " TSC ass"）
+        return any(re.search(r"\bass\b|\bsubtitles\b", line) and
+                   ("->" in line or "Apply" in line)
+                   for line in lines)
+    except Exception:
+        return False
+
+
+def _mux_srt(video: Path, srt: Path, out: Path) -> None:
+    """把 SRT 作为软字幕轨封装进 MP4。"""
+    _run([
+        "ffmpeg", "-y", "-v", "quiet",
+        "-i", str(video),
+        "-i", str(srt),
+        "-c", "copy", "-c:s", "mov_text",
+        "-metadata:s:s:0", "language=chi",
+        str(out),
+    ])
+
+
+def _burn_subtitles(video: Path, ass: Path, out: Path) -> None:
+    """把 ASS 字幕烧录进视频（需要 ffmpeg 启用 libass）。"""
+    # ffmpeg ass 滤镜要求路径中的特殊字符（逗号、冒号）用反斜杠转义
+    escaped = str(ass).replace("\\", "/").replace(":", "\\:").replace(",", "\\,")
+    _run([
+        "ffmpeg", "-y", "-v", "quiet",
+        "-i", str(video),
+        "-vf", f"ass={escaped}",
+        "-c:a", "copy",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        str(out),
+    ])
+
+
 def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
-        task_id: str = "", bgm_playlist: list[str] | None = None) -> dict:
+        task_id: str = "", bgm_playlist: list[str] | None = None,
+        subtitle_mode: str = "overlay") -> dict:
     """按 edl.json 渲染成片。videos: video_id → 源视频路径（多视频任务各片段可来自不同源）。
 
     task_id 非空时：渲染成功后登记 footage_usage（以导出时 EDL 为准）
@@ -168,8 +209,37 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             raw_insert_regions=raw_regions,
             out_path=out_path.parent / "bgm.wav" if out_path else work_dir / "bgm.wav",
         )
-        _mix_with_bgm(raw_path, bgm_path, out_path)
+        mixed_path = out_path.with_suffix(".mixed" + out_path.suffix) if out_path else work_dir / "render.mixed.mp4"
+        _mix_with_bgm(raw_path, bgm_path, mixed_path)
         raw_path.unlink(missing_ok=True)
+        raw_path = mixed_path
+
+    # 字幕烧录/封装（overlay 模式：优先硬字幕，ffmpeg 不支持则回退软字幕 SRT）
+    if subtitle_mode == "overlay":
+        from . import stage_subtitle
+
+        subs = stage_subtitle.run(work_dir, mode="overlay")
+        if _has_ass_filter():
+            tmp_out = out_path or work_dir / "render_sub.mp4"
+            _burn_subtitles(raw_path, Path(subs["ass"]), tmp_out)
+            raw_path.unlink(missing_ok=True)
+            if out_path is None:
+                out_path = tmp_out
+        else:
+            tmp_out = out_path or work_dir / "render_sub.mp4"
+            _mux_srt(raw_path, Path(subs["srt"]), tmp_out)
+            raw_path.unlink(missing_ok=True)
+            if out_path is None:
+                out_path = tmp_out
+    elif subtitle_mode == "letterbox":
+        raise NotImplementedError("letterbox 字幕模式尚未实现")
+    else:
+        # 无字幕模式：raw 直接就是成片
+        if raw_path != out_path:
+            if out_path is None:
+                out_path = raw_path
+            else:
+                raw_path.rename(out_path)
 
     registered = 0
     if task_id:
