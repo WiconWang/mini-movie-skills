@@ -4,7 +4,8 @@
 
 MVP 约定（与最终设计的差距，逐步补齐）：
 - TTS 用 macOS 本地 `say`（Tingting）占位，零成本验证端到端；云 TTS（火山/豆包）后续接入
-- 无片头（composition）、无 BGM、无字幕烧录、无 transform 裁 LOGO
+- 无片头（composition）、无 BGM、无字幕烧录
+- transform 裁 LOGO：系列级 + per-clip 覆盖
 - 片段时长 = max(源区间时长, TTS 时长)：TTS 更长时冻结末帧补齐（tpad clone）
 - keep_audio 的 raw_insert 段保留原声、不配解说
 """
@@ -49,14 +50,26 @@ def tts_say(text: str, out_wav: Path, voice: str = TTS_VOICE) -> float:
 
 
 def render_segment(video: Path, clip: dict, tts_wav: Path | None,
-                   out_path: Path) -> float:
-    """渲染单个片段（视频重编码 + 音轨对齐到片段时长），返回片段时长。"""
+                   out_path: Path, transform: dict | None = None) -> float:
+    """渲染单个片段（视频重编码 + transform + 音轨对齐到片段时长），返回片段时长。"""
     v_dur = clip["end"] - clip["start"]
     a_dur = _duration(tts_wav) if tts_wav else 0.0
     seg = max(v_dur, a_dur, 0.5)
     pad_v = max(seg - v_dur, 0.0)
 
-    vfilter = f"[0:v]tpad=stop_mode=clone:stop={pad_v:.2f},{SCALE},fps={FPS},format=yuv420p,setsar=1[v]"
+    # transform 链：放大 + 位移，系列级可被 per-clip 覆盖
+    xf = dict(transform or {})
+    xf.update(clip.get("transform") or {})
+    scale = xf.get("scale", 1.0)
+    offset_x = xf.get("offset_x", 0)
+    offset_y = xf.get("offset_y", 0)
+    if scale != 1.0 or offset_x or offset_y:
+        # 先放大，再平移；必须让 LOGO 区出画，同时保留主体
+        geo = f"scale=iw*{scale}:-2,setsar=1,crop=1280:720:(iw-1280)/2+{offset_x}:(ih-720)/2+{offset_y}"
+    else:
+        geo = SCALE
+
+    vfilter = f"[0:v]tpad=stop_mode=clone:stop={pad_v:.2f},{geo},fps={FPS},format=yuv420p,setsar=1[v]"
     if clip.get("keep_audio"):
         # raw_insert：保留原声
         afilter = f"[0:a]apad=whole_dur={seg:.2f},aresample=48000[a]"
@@ -87,6 +100,17 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     """
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
+
+    # 任务级 transform（系列配置）；edl 或 clip 可覆盖
+    transform = edl.get("transform") or {}
+    if task_id:
+        from .db import PROJECT_ROOT
+
+        cfg_path = PROJECT_ROOT / "tasks" / task_id / "task.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text())
+            transform = cfg.get("transform") or transform
+
     out_path = out_path or work_dir / "render.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     seg_dir = work_dir / "render_segments"
@@ -103,7 +127,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             wav = seg_dir / f"tts_{i:03d}.wav"
             tts_say(clip["text"], wav)
         seg_path = seg_dir / f"seg_{i:03d}.mp4"
-        total += render_segment(video, clip, wav, seg_path)
+        total += render_segment(video, clip, wav, seg_path, transform)
         seg_files.append(seg_path)
 
     # concat（各片段编码参数一致，可 -c copy 无损拼接；路径需绝对，避免相对基准歧义）

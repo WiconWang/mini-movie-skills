@@ -53,6 +53,9 @@ mmm status                    # 台账就绪
 | 台账闭环 | ✅ 完成 | `mmm add`（物料校验+台词预检）、`task-create`（task_map+task.json+系列配置继承）、阶段4.5 全局时间轴合流 `build_global`（offset 表，合成双视频测试通过）、jobs 打点、narrate/select/render 均支持 task 模式 |
 | footage_usage 闭环 | ✅ 完成 | 选片查台账排除已占用镜头（耗尽兜底标 needs_review）；导出时按 EDL 登记 + 归档 edl.final.json |
 | 多视频全局对齐 | ✅ 完成 | `run align --task`：逐视频 ASR 断点复用 → offset 拼全局词流 → 整份台词一次对齐 → 拆回各视频本地时间；合成双视频测试通过；顺带修复 load_script 丢失 voiced 字段的 bug |
+| 阶段7 打磨 | 🚧 进行中 | transform 裁 LOGO（系列级+per-clip 覆盖）、成片命名模板渲染（task.json title_template）已接；待补：云TTS、BGM、字幕、片头 |
+| 导出器B 剪映草稿 | ⬜ 未开始 | pyJianYingDraft |
+| SKILL.md 同步 | ⬜ 未开始 | 当前命令手册未收录 add/task-create/run --task 等新命令 |
 
 ## 三、待办任务清单（按优先级）
 

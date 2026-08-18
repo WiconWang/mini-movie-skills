@@ -14,6 +14,27 @@ run_app = typer.Typer(help="分阶段执行管线（阶段1~7）")
 app.add_typer(run_app, name="run")
 
 
+def _render_title(cfg: dict) -> str:
+    """按 task.json 的 title_template 渲染成片文件名（清理非法字符）。"""
+    template = cfg.get("title_template") or "{task_id}"
+    # 字段优先级：task.json 字段 > 首个视频的 catalog 字段
+    videos = cfg.get("videos", [])
+    vid0 = videos[0].get("video_id") if videos else ""
+    fields = {
+        "task_id": cfg.get("task_id", ""),
+        "series": cfg.get("series", ""),
+        "version": cfg.get("version", ""),
+        "chapter": cfg.get("chapter", ""),
+        "video_id": vid0,
+    }
+    # 允许 task.json 中直接写 version/chapter；缺省从 catalog 补（task-create 会写入）
+    title = template.format(**fields)
+    # 清理文件名非法字符
+    for ch in r'\/:*?"<>|':
+        title = title.replace(ch, "_")
+    return title or cfg.get("task_id", "render")
+
+
 @app.command("db-init")
 def db_init() -> None:
     """按 db/schema.sql 初始化台账数据库（幂等，迁移后第一步）。"""
@@ -277,9 +298,13 @@ def run_render(
 
     if task:
         task_dir = db.PROJECT_ROOT / "tasks" / task
+        cfg = json.loads((task_dir / "task.json").read_text())
         videos = {v["video_id"]: db.PROJECT_ROOT / v["source_path"] / "source.mp4"
                   for v in catalog.task_videos(task)}
-        out_path = db.PROJECT_ROOT / "output" / task / "render.mp4"
+        out_name = _render_title(cfg)
+        out_dir = db.PROJECT_ROOT / "output" / task
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{out_name}.mp4"
         work_dir = task_dir
     elif path and video:
         work_dir, video_p = Path(path), Path(video)

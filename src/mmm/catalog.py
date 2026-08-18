@@ -82,9 +82,12 @@ def create_task(task_id: str, video_ids: list[str], series: str = "") -> dict:
     if series_cfg.exists():
         cfg = yaml.safe_load(series_cfg.read_text(encoding="utf-8")) or {}
 
+    v0 = known[video_ids[0]]
     task = {
         "task_id": task_id,
         "series": series,
+        "version": v0.get("version") or cfg.get("version", ""),
+        "chapter": v0.get("chapter") or cfg.get("chapter", ""),
         "videos": [{"video_id": v, "seq": i} for i, v in enumerate(video_ids)],
         "target_minutes": cfg.get("target_minutes", 15),
         "title_template": cfg.get("title_template", "{chapter}"),
