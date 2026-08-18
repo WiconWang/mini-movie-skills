@@ -49,7 +49,7 @@ mmm status                    # 台账就绪
 | 阶段4 索引融合 | ✅ 完成 | `stage_index.py` + `run_index` CLI；C级规则修正为高动态不强制台词，验证分布 C=4/A=18 |
 | 阶段5 解说稿生成 | ✅ MVP通过 | `stage_narrate.py` + `run_narrate` CLI；deepseek-v4-flash 输出引用台词ID，闸口1 Markdown 已生成 |
 | 阶段6 选片+EDL | ✅ MVP通过 | `stage_select.py` + `run_select` CLI；E→A 优先级选取 + 时长匹配；分镜板已生成；TTS 时长暂按字数估算，footage_usage 落 JSON 未接台账 |
-| 阶段7 合成导出 | ⬜ 待开始 | 依赖 EDL；导出器A ffmpeg 直出 MP4，导出器B 剪映草稿 |
+| 阶段7 合成导出 | ✅ MVP通过 | `stage_render.py` + `run render` CLI；macOS say(Tingting) 占位 TTS + ffmpeg 片段级音画对齐 + concat 直出；冒烟 20片段→120s MP4；待补：云TTS/BGM/字幕/transform/片头/剪映导出 |
 
 ## 三、待办任务清单（按优先级）
 

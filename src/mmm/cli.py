@@ -203,9 +203,32 @@ def run_select(
 
 
 @run_app.command("render")
-def run_render(task_id: str) -> None:
-    """阶段7 导出器A：ffmpeg 直出 MP4。"""
-    raise NotImplementedError("M4 待实现")
+def run_render(
+    video_id: str = typer.Argument(""),
+    path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
+    video: str = typer.Option("", "--video", help="直接给视频路径（冒烟测试用）"),
+) -> None:
+    """阶段7 导出器A：ffmpeg 直出 MP4（MVP：本机 say 占位 TTS）。"""
+    from pathlib import Path
+
+    from . import stage_render
+
+    if path and video:
+        out_dir, video_p = Path(path), Path(video)
+    elif video_id:
+        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        video_p = db.PROJECT_ROOT / "materials" / video_id / "source.mp4"
+    else:
+        typer.echo("✗ 必须提供 video_id 或 --path + --video", err=True)
+        raise typer.Exit(1)
+    for p in (out_dir / "edl.json", video_p):
+        if not p.exists():
+            typer.echo(f"✗ 文件不存在: {p}", err=True)
+            raise typer.Exit(1)
+
+    summary = stage_render.run(out_dir, video_p)
+    typer.echo(f"✓ 渲染完成: {summary['clips']} 片段, 成片时长 {summary['duration']}s")
+    typer.echo(f"  产物: {summary['output']}")
 
 
 @app.command("export-jianying")
