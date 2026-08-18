@@ -242,6 +242,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
                 raw_path.rename(out_path)
 
     registered = 0
+    final_output = out_path
     if task_id:
         from .catalog import register_usage
 
@@ -249,7 +250,11 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         # 归档最终 EDL（复盘/二期素材库用；剪映手调不回流，以此为准）
         (out_path.parent / "edl.final.json").write_text(
             json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 片头拼接
+        from . import stage_compose
+
+        final_output = stage_compose.from_task(task_id, out_path)
 
     return {"clips": len(clips), "duration": round(total, 1),
-            "output": str(out_path), "footage_registered": registered,
+            "output": str(final_output), "footage_registered": registered,
             "bgm": str(bgm_path) if bgm_path else None}
