@@ -95,27 +95,111 @@ def run_align(
 
 
 @run_app.command("vision")
-def run_vision(video_id: str) -> None:
+def run_vision(
+    video_id: str = typer.Argument(""),
+    path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
+    model: str = typer.Option("mimo-v2.5", "--model", "-m", help="视觉模型"),
+) -> None:
     """阶段3：抽帧 + 视觉理解 → shots_meta.json。"""
-    raise NotImplementedError("M2 待实现")
+    from pathlib import Path
+
+    from . import stage_vision
+
+    if path:
+        video = Path(path)
+        out_dir = db.PROJECT_ROOT / "workspace" / "_smoke" / video.stem
+    else:
+        video = db.PROJECT_ROOT / "materials" / video_id / "source.mp4"
+        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+    if not video.exists():
+        typer.echo(f"✗ 视频不存在: {video}", err=True)
+        raise typer.Exit(1)
+
+    summary = stage_vision.run(video, out_dir, model=model)
+    typer.echo(f"✓ {video.name}: 分析 {summary['total']} 个镜头, 失败 {len(summary['errors'])}")
+    typer.echo(f"  产物: {out_dir}/shots_meta.json")
 
 
 @run_app.command("index")
-def run_index(video_id: str) -> None:
+def run_index(
+    video_id: str = typer.Argument(""),
+    path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
+) -> None:
     """阶段4：合并时间轴索引 → timeline.json。"""
-    raise NotImplementedError("M2 待实现")
+    from pathlib import Path
+
+    from . import stage_index
+
+    if path:
+        out_dir = Path(path)
+    else:
+        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+    if not (out_dir / "shots.json").exists():
+        typer.echo(f"✗ workspace 不存在或缺少 shots.json: {out_dir}", err=True)
+        raise typer.Exit(1)
+
+    stats = stage_index.run(out_dir)
+    by_class = stats["by_class"]
+    typer.echo(f"✓ 时间轴索引已生成: {stats['shots']} 镜头, "
+               f"E={by_class['E']} D={by_class['D']} C={by_class['C']} B={by_class['B']} A={by_class['A']}")
+    typer.echo(f"  产物: {out_dir}/timeline.json")
 
 
 @run_app.command("narrate")
-def run_narrate(task_id: str) -> None:
+def run_narrate(
+    task_id: str = typer.Argument(""),
+    timeline: str = typer.Option("", "--timeline", help="直接给 timeline.json 路径（冒烟测试用，跳过 task_id）"),
+    target_minutes: float = typer.Option(15.0, "--target-minutes", "-t", help="目标正片时长（分钟）"),
+) -> None:
     """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。"""
-    raise NotImplementedError("M3 待实现")
+    from pathlib import Path
+
+    from . import stage_narrate
+
+    if timeline:
+        timeline_path = Path(timeline)
+        out_dir = timeline_path.parent
+    elif task_id:
+        timeline_path = db.PROJECT_ROOT / "tasks" / task_id / "global_timeline.json"
+        out_dir = db.PROJECT_ROOT / "tasks" / task_id
+    else:
+        typer.echo("✗ 必须提供 task_id 或 --timeline", err=True)
+        raise typer.Exit(1)
+
+    if not timeline_path.exists():
+        typer.echo(f"✗ timeline 不存在: {timeline_path}", err=True)
+        raise typer.Exit(1)
+
+    summary = stage_narrate.run(timeline_path, out_dir, target_minutes=target_minutes)
+    typer.echo(f"✓ 解说稿生成完成: {summary['sentences']} 句")
+    typer.echo(f"  产物: {out_dir}/narration.json, narration.md")
+    typer.echo("  ⏸ 闸口1：请审阅 narration.md，确认后再继续阶段6")
 
 
 @run_app.command("select")
-def run_select(task_id: str) -> None:
+def run_select(
+    video_id: str = typer.Argument(""),
+    path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
+    chars_per_sec: float = typer.Option(4.5, "--chars-per-sec", help="TTS 语速估算（字/秒）"),
+) -> None:
     """阶段6：选片段 + 自检回环 + 分镜板。完成后进入闸口2，等待人工确认。"""
-    raise NotImplementedError("M4 待实现")
+    from pathlib import Path
+
+    from . import stage_select
+
+    if path:
+        out_dir = Path(path)
+    else:
+        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+    if not (out_dir / "narration.json").exists():
+        typer.echo(f"✗ 缺少 narration.json: {out_dir}", err=True)
+        raise typer.Exit(1)
+
+    summary = stage_select.run(out_dir, video_id or out_dir.name, chars_per_sec=chars_per_sec)
+    typer.echo(f"✓ EDL 生成完成: {summary['clips']} 片段, "
+               f"源视频总长 {summary['total_source_seconds']:.1f}s")
+    typer.echo(f"  产物: {summary['edl']}, {summary['storyboard']}")
+    typer.echo("  ⏸ 闸口2：请审阅 storyboard.html，确认或调整后再继续阶段7")
 
 
 @run_app.command("render")

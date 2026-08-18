@@ -1,7 +1,8 @@
 """LLM 客户端（opencode zen 通道）。
 
-实测教训（2026-08-17）：zen 网关对调用频率敏感，密集调用触发 403(1010) 临时封禁，
-静默数十秒后恢复。因此所有调用必须：限速 + 指数退避重试。
+排障记录（2026-08-17）：403(1010) 是 Cloudflare WAF 的 UA 指纹拦截（Python-urllib
+被挡），非频率限制——换 curl UA 即放行，实测连发 6 次无限制。限速仅防突发并发。
+退避重试保留，应对偶发网络抖动与服务端 5xx。
 
 配置：.env 中 OPENCODE_ZEN_BASE_URL / OPENCODE_ZEN_API_KEY（.env 已 gitignore）。
 """
@@ -18,8 +19,8 @@ from pathlib import Path
 
 from .db import PROJECT_ROOT
 
-# 默认限速：每次调用间隔最少秒数（zen 风控实测较敏感）
-MIN_INTERVAL_SEC = float(os.environ.get("MMM_LLM_INTERVAL", "3"))
+# 默认限速：每次调用间隔最少秒数（防突发并发，非风控要求——实测 zen 网关不限频率）
+MIN_INTERVAL_SEC = float(os.environ.get("MMM_LLM_INTERVAL", "0.5"))
 MAX_RETRIES = 5
 
 _last_call = 0.0

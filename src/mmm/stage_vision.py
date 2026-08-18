@@ -80,3 +80,25 @@ def analyze_shot(video: Path, shot: dict, work_dir: Path,
         "is_cutscene": all(r.get("is_cutscene") for r in ok),    # 全部帧认为是过场才算
         "frame_count": len(frames),
     }
+
+
+def run(video: Path, work_dir: Path, model: str = VISION_MODEL) -> dict:
+    """批量分析 workspace 下所有镜头 → shots_meta.json。
+
+    每镜头调用一次 VLM（已含 3s 限速 + 指数退避），失败镜头标记 _error 继续后续。
+    """
+    shots_path = work_dir / "shots.json"
+    shots = json.loads(shots_path.read_text())["shots"]
+    metas = []
+    errors = []
+    for shot in shots:
+        meta = analyze_shot(video, shot, work_dir, model=model)
+        metas.append(meta)
+        if "_error" in meta:
+            errors.append(shot["id"])
+        # llm.chat 内部已有 3s 限速，这里不再额外 sleep
+
+    out = {"model": model, "shots": shots, "metas": metas}
+    meta_path = work_dir / "shots_meta.json"
+    meta_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"total": len(metas), "errors": errors}

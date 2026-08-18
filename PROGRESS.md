@@ -45,9 +45,11 @@ mmm status                    # 台账就绪
 | ASR 选型实测 | ✅ 完成 | **定型：medium+VAD+关上下文连锁（25倍实时无幻觉）**；small 4.7x 但幻觉严重已淘汰 |
 | CLI 管理命令 | ✅ 完成 | db-init / catalog-import / status / locate / find |
 | 阶段2 真机集成 | ✅ M1 通过 | 真机验收：多视频全局对齐覆盖率 92.3%，ASR 定型 medium+VAD（25x） |
-| 阶段3 视觉理解 | ⬜ 待开始 | key 已到位（.env），注意 zen 风控：限速+退避已实现于 llm.py |
-| 分镜板 reviewer | ✅ 完成 | 固化 HTML 工具 + 构建器，浏览器实测通过 |
-| 阶段5~7 | ⬜ 未开始 | 依赖前序 |
+| 阶段3 视觉理解 | ✅ 原型通过 | `stage_vision.py` + `run_vision` CLI；mimo-v2.5 全量分析22镜头，UI/动态/角色识别准确 |
+| 阶段4 索引融合 | ✅ 完成 | `stage_index.py` + `run_index` CLI；C级规则修正为高动态不强制台词，验证分布 C=4/A=18 |
+| 阶段5 解说稿生成 | ✅ MVP通过 | `stage_narrate.py` + `run_narrate` CLI；deepseek-v4-flash 输出引用台词ID，闸口1 Markdown 已生成 |
+| 阶段6 选片+EDL | ✅ MVP通过 | `stage_select.py` + `run_select` CLI；E→A 优先级选取 + 时长匹配；分镜板已生成；TTS 时长暂按字数估算，footage_usage 落 JSON 未接台账 |
+| 阶段7 合成导出 | ⬜ 待开始 | 依赖 EDL；导出器A ffmpeg 直出 MP4，导出器B 剪映草稿 |
 
 ## 三、待办任务清单（按优先级）
 

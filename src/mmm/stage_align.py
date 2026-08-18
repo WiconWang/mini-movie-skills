@@ -17,9 +17,11 @@ from dataclasses import dataclass, field
 MAX_INTERPOLATE_GAP = 5
 # 中文语音语速（字/秒），用于预估缺失行的应有语音时长
 SPEECH_CHARS_PER_SEC = 4.5
-# 插值放行条件：锚点时间差 ≥ 缺失行预估时长 × 此系数；
-# 不满足说明音频里根本没有这些行的时间（未录制/被剪掉），标记 unmatched 不插值
+# 插值放行条件：锚点时间差 必须装得下这些行（≥预估×MIN_TIME_FIT）
+# 且不能离得太远（≤预估×MAX_TIME_FIT）——太远说明是跨场景/跨视频的大段缺失，
+# 这些行根本不在两个锚点之间（真机案例：P1末尾与P2结尾的锚点相隔1170秒）
 MIN_TIME_FIT = 0.6
+MAX_TIME_FIT = 5.0
 
 
 # 行内字符命中率低于此值，不采信 matched（防止相似行错配到错误区域）
@@ -115,8 +117,8 @@ def align(script_lines: list[dict], asr_words: list[AsrWord]) -> dict:
         gap_chars = sum(len(_normalize(lines[i].text)) for i in range(a + 1, b)
                         if lines[i].align == "unmatched")
         est_dur = gap_chars / SPEECH_CHARS_PER_SEC
-        if (t1 - t0) < est_dur * MIN_TIME_FIT:
-            continue  # 时间装不下 → 这些行不在音频里，保持 unmatched
+        if not (est_dur * MIN_TIME_FIT <= (t1 - t0) <= est_dur * MAX_TIME_FIT):
+            continue  # 时间装不下（未录）或相距太远（跨场景大段缺失）→ 保持 unmatched
         cursor = t0
         for i in range(a + 1, b):
             if lines[i].align != "unmatched":
