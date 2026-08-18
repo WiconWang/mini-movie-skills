@@ -61,15 +61,24 @@ def chat(model: str, messages: list[dict], *, max_tokens: int = 4096,
         req = urllib.request.Request(
             f"{base}/chat/completions",
             data=json.dumps(payload).encode(),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     # zen 网关 WAF 按 UA 指纹拦截（实测 Python-urllib 被 403(1010)，curl 放行）
+                     "User-Agent": "curl/8.7.1"},
         )
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
                 r = json.load(resp)
             return r["choices"][0]["message"]["content"] or ""
         except urllib.error.HTTPError as e:
-            if e.code == 403 and attempt < MAX_RETRIES:
+            if e.code in (403, 429, 500, 502, 503) and attempt < MAX_RETRIES:
                 backoff = min(30 * (2 ** attempt), 300)   # 30s → 60s → 120s → 240s → 300s
+                wait_total += backoff
+                time.sleep(backoff)
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt < MAX_RETRIES:   # 网络抖动（SSL EOF/超时等）：短退避重试
+                backoff = min(10 * (2 ** attempt), 120)
                 wait_total += backoff
                 time.sleep(backoff)
                 continue
