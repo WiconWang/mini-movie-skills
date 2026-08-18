@@ -20,3 +20,17 @@ def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     conn.commit()
     return conn
+
+
+def record_job(task_id: str, stage: str, status: str, message: str = "") -> None:
+    """执行台账打点：任务 × 阶段状态（幂等 upsert）。"""
+    conn = init_db()
+    conn.execute(
+        """INSERT INTO jobs (task_id, stage, status, message)
+           VALUES (?,?,?,?)
+           ON CONFLICT(task_id, stage) DO UPDATE SET
+             status=excluded.status, message=excluded.message,
+             updated_at=datetime('now')""",
+        (task_id, stage, status, message),
+    )
+    conn.commit()

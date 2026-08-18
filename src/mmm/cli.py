@@ -23,15 +23,44 @@ def db_init() -> None:
 
 
 @app.command("add")
-def add(video: str, script: str = "", series: str = "", version: str = "", chapter: str = "") -> None:
-    """登记素材：入库 + 台账登记 + 台词预检（物料规范 §6）。"""
-    raise NotImplementedError("M1 待实现")
+def add(
+    video_id: str,
+    series: str = typer.Option(..., "--series", "-s", help="系列（关联 config/series/ 配置）"),
+    version: str = typer.Option("", "--version", "-v"),
+    chapter: str = typer.Option("", "--chapter", "-c"),
+) -> None:
+    """登记素材：校验物料 + 台词预检 + 台账登记（物料规范 §6）。"""
+    from . import catalog
+
+    try:
+        report = catalog.add_video(video_id, series, version, chapter)
+    except FileNotFoundError as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ 已登记 {video_id}（{series} {version} {chapter}）")
+    typer.echo(f"  台词预检: {report['lines']} 行, 无配音 {report['unvoiced']} 行"
+               + (f", ⚠ 坏行 {report['bad_lines']}" if report["bad_lines"] else ""))
 
 
 @app.command("task-create")
-def task_create(videos: str, template: str = "") -> None:
-    """建任务：引用视频（逗号分隔=seq 顺序）、选系列模板。"""
-    raise NotImplementedError("M1 待实现")
+def task_create(
+    task_id: str,
+    videos: str = typer.Option(..., "--videos", help="逗号分隔的 video_id，顺序即剧情顺序"),
+    series: str = typer.Option("", "--series", "-s", help="系列（缺省取首个视频的系列）"),
+) -> None:
+    """建任务：引用视频 + 生成 task.json（类型适配层配置继承系列默认）。"""
+    from . import catalog
+
+    video_ids = [v.strip() for v in videos.split(",") if v.strip()]
+    try:
+        task = catalog.create_task(task_id, video_ids, series)
+    except KeyError as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ 任务已创建: {task_id}（{task['series']}，{len(video_ids)} 个视频，"
+               f"目标 {task['target_minutes']} 分钟）")
+    typer.echo(f"  产物: tasks/{task_id}/task.json")
+    typer.echo(f"  下一步: 逐视频跑 mmm run shots/align/vision/index，然后 mmm run narrate {task_id}")
 
 
 @run_app.command("shots")
@@ -154,14 +183,19 @@ def run_narrate(
     """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。"""
     from pathlib import Path
 
-    from . import stage_narrate
+    from . import stage_index, stage_narrate
 
     if timeline:
         timeline_path = Path(timeline)
         out_dir = timeline_path.parent
     elif task_id:
-        timeline_path = db.PROJECT_ROOT / "tasks" / task_id / "global_timeline.json"
         out_dir = db.PROJECT_ROOT / "tasks" / task_id
+        timeline_path = out_dir / "global_timeline.json"
+        if not timeline_path.exists():
+            # 阶段4.5：多视频合流（单视频任务同样走此路径，结构统一）
+            stats = stage_index.build_global(task_id)
+            typer.echo(f"✓ 全局时间轴: {stats['shots']} 镜头, 总时长 {stats['duration']}s, "
+                       f"分级 {stats['by_class']}")
     else:
         typer.echo("✗ 必须提供 task_id 或 --timeline", err=True)
         raise typer.Exit(1)
@@ -173,6 +207,8 @@ def run_narrate(
     summary = stage_narrate.run(timeline_path, out_dir, target_minutes=target_minutes)
     typer.echo(f"✓ 解说稿生成完成: {summary['sentences']} 句")
     typer.echo(f"  产物: {out_dir}/narration.json, narration.md")
+    if task_id:
+        db.record_job(task_id, "narrate", "gate_waiting", "等待闸口1人工审阅 narration.md")
     typer.echo("  ⏸ 闸口1：请审阅 narration.md，确认后再继续阶段6")
 
 
@@ -180,6 +216,7 @@ def run_narrate(
 def run_select(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
+    task: str = typer.Option("", "--task", help="任务模式：读 tasks/{task_id} 的 narration + 全局时间轴"),
     chars_per_sec: float = typer.Option(4.5, "--chars-per-sec", help="TTS 语速估算（字/秒）"),
 ) -> None:
     """阶段6：选片段 + 自检回环 + 分镜板。完成后进入闸口2，等待人工确认。"""
@@ -187,15 +224,21 @@ def run_select(
 
     from . import stage_select
 
-    if path:
-        out_dir = Path(path)
+    if task:
+        out_dir = db.PROJECT_ROOT / "tasks" / task
+        summary = stage_select.run(out_dir, task, timeline_name="global_timeline.json",
+                                   chars_per_sec=chars_per_sec)
+        db.record_job(task, "select", "gate_waiting", "等待闸口2人工审阅 storyboard.html")
+        label = task
     else:
-        out_dir = db.PROJECT_ROOT / "workspace" / video_id
-    if not (out_dir / "narration.json").exists():
-        typer.echo(f"✗ 缺少 narration.json: {out_dir}", err=True)
-        raise typer.Exit(1)
-
-    summary = stage_select.run(out_dir, video_id or out_dir.name, chars_per_sec=chars_per_sec)
+        out_dir = Path(path) if path else db.PROJECT_ROOT / "workspace" / video_id
+        if not (out_dir / "narration.json").exists():
+            typer.echo(f"✗ 缺少 narration.json: {out_dir}", err=True)
+            raise typer.Exit(1)
+        label = video_id or out_dir.name
+        summary = stage_select.run(out_dir, label,
+                                   workspace_of=lambda _vid: out_dir,
+                                   chars_per_sec=chars_per_sec)
     typer.echo(f"✓ EDL 生成完成: {summary['clips']} 片段, "
                f"源视频总长 {summary['total_source_seconds']:.1f}s")
     typer.echo(f"  产物: {summary['edl']}, {summary['storyboard']}")
@@ -207,28 +250,44 @@ def run_render(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     video: str = typer.Option("", "--video", help="直接给视频路径（冒烟测试用）"),
+    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频"),
 ) -> None:
     """阶段7 导出器A：ffmpeg 直出 MP4（MVP：本机 say 占位 TTS）。"""
     from pathlib import Path
 
-    from . import stage_render
+    from . import catalog, stage_render
 
-    if path and video:
-        out_dir, video_p = Path(path), Path(video)
+    if task:
+        task_dir = db.PROJECT_ROOT / "tasks" / task
+        videos = {v["video_id"]: db.PROJECT_ROOT / v["source_path"] / "source.mp4"
+                  for v in catalog.task_videos(task)}
+        out_path = db.PROJECT_ROOT / "output" / task / "render.mp4"
+        work_dir = task_dir
+    elif path and video:
+        work_dir, video_p = Path(path), Path(video)
+        videos = {work_dir.name: video_p}
+        out_path = None
     elif video_id:
-        out_dir = db.PROJECT_ROOT / "workspace" / video_id
-        video_p = db.PROJECT_ROOT / "materials" / video_id / "source.mp4"
+        work_dir = db.PROJECT_ROOT / "workspace" / video_id
+        videos = {video_id: db.PROJECT_ROOT / "materials" / video_id / "source.mp4"}
+        out_path = None
     else:
-        typer.echo("✗ 必须提供 video_id 或 --path + --video", err=True)
+        typer.echo("✗ 必须提供 --task 或 video_id 或 --path + --video", err=True)
         raise typer.Exit(1)
-    for p in (out_dir / "edl.json", video_p):
+
+    if not (work_dir / "edl.json").exists():
+        typer.echo(f"✗ 缺少 edl.json: {work_dir}", err=True)
+        raise typer.Exit(1)
+    for vid, p in videos.items():
         if not p.exists():
-            typer.echo(f"✗ 文件不存在: {p}", err=True)
+            typer.echo(f"✗ 视频不存在: {p}（{vid}）", err=True)
             raise typer.Exit(1)
 
-    summary = stage_render.run(out_dir, video_p)
+    summary = stage_render.run(work_dir, videos, out_path)
     typer.echo(f"✓ 渲染完成: {summary['clips']} 片段, 成片时长 {summary['duration']}s")
     typer.echo(f"  产物: {summary['output']}")
+    if task:
+        db.record_job(task, "render", "done", summary["output"])
 
 
 @app.command("export-jianying")

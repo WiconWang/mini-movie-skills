@@ -79,9 +79,67 @@ def run(work_dir: Path) -> dict:
     fades = json.loads((work_dir / "fades.json").read_text())["fades"]
     lines = json.loads((work_dir / "lines.json").read_text())["lines"]
     meta_path = work_dir / "shots_meta.json"
-    metas = json.loads(meta_path.read_text()) if meta_path.exists() else []
+    metas_raw = json.loads(meta_path.read_text()) if meta_path.exists() else []
+    # shots_meta.json 兼容两种形态：纯 list，或 {metas: [...]}（stage_vision.run 产出）
+    metas = metas_raw["metas"] if isinstance(metas_raw, dict) else metas_raw
 
     timeline = build_timeline(shots, fades, lines, metas)
     (work_dir / "timeline.json").write_text(
         json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8")
     return timeline["stats"]
+
+
+def build_global(task_id: str) -> dict:
+    """阶段4.5：多视频合流 → tasks/{task_id}/global_timeline.json。
+
+    按 task_map.seq 拼接各视频 timeline，内部维护 offset 表；
+    每条 shot/line/fade 保留 video_id 与 local_start/local_end，
+    start/end 为任务全局时间（设计文档 §4 阶段4 多视频合流）。
+    """
+    from .catalog import task_videos
+    from .db import PROJECT_ROOT
+
+    videos = task_videos(task_id)
+    if not videos:
+        raise KeyError(f"任务无关联素材: {task_id}（先 mmm task-create）")
+
+    m_shots: list[dict] = []
+    m_lines: list[dict] = []
+    m_fades: list[dict] = []
+    videos_meta = []
+    offset = 0.0
+    for v in videos:
+        vid = v["video_id"]
+        tl_path = PROJECT_ROOT / "workspace" / vid / "timeline.json"
+        tl = json.loads(tl_path.read_text(encoding="utf-8"))
+        dur = max((s["end"] for s in tl["shots"]), default=0.0)
+        for s in tl["shots"]:
+            m_shots.append({**s, "video_id": vid,
+                            "local_start": s["start"], "local_end": s["end"],
+                            "start": round(s["start"] + offset, 3),
+                            "end": round(s["end"] + offset, 3)})
+        for l in tl["lines"]:
+            nl = {**l, "video_id": vid}
+            if l.get("start") is not None:
+                nl["local_start"], nl["local_end"] = l["start"], l["end"]
+                nl["start"] = round(l["start"] + offset, 2)
+                nl["end"] = round(l["end"] + offset, 2)
+            m_lines.append(nl)
+        for f in tl.get("fades", []):
+            m_fades.append({**f, "video_id": vid,
+                            "start": round(f["start"] + offset, 3),
+                            "end": round(f["end"] + offset, 3)})
+        videos_meta.append({"video_id": vid, "offset": round(offset, 3),
+                            "duration": round(dur, 3)})
+        offset += dur
+
+    counts = {c: sum(1 for s in m_shots if s["class"] == c) for c in "EDCBA"}
+    out = {"task_id": task_id, "videos": videos_meta,
+           "shots": m_shots, "lines": m_lines, "fades": m_fades,
+           "stats": {"shots": len(m_shots), "by_class": counts,
+                     "duration": round(offset, 1)}}
+    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "global_timeline.json").write_text(
+        json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out["stats"]

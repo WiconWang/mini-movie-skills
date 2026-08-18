@@ -78,17 +78,21 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
     return seg
 
 
-def run(work_dir: Path, video: Path, out_path: Path | None = None) -> dict:
-    """按 edl.json 渲染成片。"""
+def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None) -> dict:
+    """按 edl.json 渲染成片。videos: video_id → 源视频路径（多视频任务各片段可来自不同源）。"""
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
     out_path = out_path or work_dir / "render.mp4"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     seg_dir = work_dir / "render_segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
 
     seg_files = []
     total = 0.0
     for i, clip in enumerate(clips):
+        video = videos.get(clip["video_id"])
+        if video is None:
+            raise KeyError(f"EDL 片段引用未提供的 video_id: {clip['video_id']}")
         wav = None
         if not clip.get("keep_audio"):
             wav = seg_dir / f"tts_{i:03d}.wav"

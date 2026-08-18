@@ -75,17 +75,31 @@ def _pick_clip(candidates: list[dict], t0: float, t1: float,
     return selected, candidates
 
 
-def _frame_paths(shot_id: int, work_dir: Path) -> list[str]:
-    """返回镜头已有的抽帧相对路径（用于分镜板内联）。"""
-    frames_dir = work_dir / "frames" / f"shot_{shot_id:03d}"
+def _frame_paths(shot_id: int, ws: Path) -> list[str]:
+    """返回镜头已有的抽帧相对路径（相对项目根，用于分镜板内联）。"""
+    frames_dir = ws / "frames" / f"shot_{shot_id:03d}"
     if not frames_dir.exists():
         return []
-    return [str(f.relative_to(work_dir)) for f in sorted(frames_dir.glob("*.jpg"))]
+    from .db import PROJECT_ROOT
+    return [str(f.resolve().relative_to(PROJECT_ROOT))
+            for f in sorted(frames_dir.glob("*.jpg"))]
 
 
-def build_edl(timeline: dict, narration: list[dict], video_id: str,
-              work_dir: Path, *, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
-    """根据解说稿生成 EDL。"""
+def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
+              workspace_of=None, *, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
+    """根据解说稿生成 EDL。
+
+    多视频全局时间轴：shot/line 自带 video_id 与 local_start/local_end，
+    EDL 片段记录 (video_id, 源内本地区间) —— 相对时间轴铁律。
+    workspace_of: video_id → 该视频的 workspace 目录（找抽帧用）。
+    """
+    from .db import PROJECT_ROOT
+
+    workspace_of = workspace_of or (lambda vid: PROJECT_ROOT / "workspace" / vid)
+
+    def ws_of(vid: str) -> Path:
+        return workspace_of(vid)
+
     lines_by_id = {l["id"]: l for l in timeline.get("lines", [])}
     shots = timeline.get("shots", [])
     clips = []
@@ -113,24 +127,35 @@ def build_edl(timeline: dict, narration: list[dict], video_id: str,
         clip_end = selected[-1]["end"]
         shot_ids = [s["shot_id"] for s in selected if s["shot_id"] is not None]
 
+        # 解析本片段的源视频与本地时间区间（相对时间轴：EDL 不记全局秒数）
+        first_shot = next((s for s in candidates if s["id"] == shot_ids[0]), None) \
+            if shot_ids else None
+        vid = (first_shot or timed[0]).get("video_id") or default_video_id
+        off = 0.0
+        if first_shot is not None and "local_start" in first_shot:
+            off = first_shot["start"] - first_shot["local_start"]   # 全局→本地 offset
+        local_start = round(clip_start - off, 2)
+        local_end = round(clip_end - off, 2)
+
         clips.append({
             "type": "narration_clip",
             "narration_id": n["id"],
             "text": n["text"],
-            "video_id": video_id,
-            "start": round(clip_start, 2),
-            "end": round(clip_end, 2),
+            "video_id": vid,
+            "start": local_start,
+            "end": local_end,
             "keep_audio": False,
             "shot_ids": shot_ids,
-            "frames": _frame_paths(shot_ids[0], work_dir) if shot_ids else [],
+            "frames": _frame_paths(shot_ids[0], ws_of(vid)) if shot_ids else [],
             "candidates": [
                 {
                     "shot_id": c["id"],
+                    "video_id": c.get("video_id") or default_video_id,
                     "class": c.get("class", "A"),
                     "description": c.get("description") or "",
                     "motion": c.get("motion") or "low",
                     "has_ui": c.get("has_ui"),
-                    "frame": _frame_paths(c["id"], work_dir)[0] if _frame_paths(c["id"], work_dir) else "",
+                    "frame": (_frame_paths(c["id"], ws_of(c.get("video_id") or default_video_id)) or [""])[0],
                 }
                 for c in all_cands[:5]
             ],
@@ -138,23 +163,31 @@ def build_edl(timeline: dict, narration: list[dict], video_id: str,
 
         for s in selected:
             if s["shot_id"] is not None:
-                usage.append({"video_id": video_id, "shot_id": s["shot_id"]})
+                usage.append({"video_id": vid, "shot_id": s["shot_id"]})
 
     return {
-        "video_id": video_id,
+        "video_id": default_video_id,
         "clips": clips,
         "footage_usage": usage,
     }
 
 
-def run(work_dir: Path, video_id: str, *, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
-    """从 workspace 读取 narration.json + timeline.json，产出 edl.json + storyboard.html。"""
+def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
+        workspace_of=None, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
+    """从目录读取 narration.json + 时间轴，产出 edl.json + storyboard.html。
+
+    单视频冒烟：work_dir=workspace/{vid}，timeline_name=timeline.json；
+    任务模式：work_dir=tasks/{task_id}，timeline_name=global_timeline.json。
+    """
+    from .db import PROJECT_ROOT
+
     narration_path = work_dir / "narration.json"
-    timeline_path = work_dir / "timeline.json"
+    timeline_path = work_dir / timeline_name
     narration = json.loads(narration_path.read_text())["narration"]
     timeline = json.loads(timeline_path.read_text())
 
-    edl = build_edl(timeline, narration, video_id, work_dir, chars_per_sec=chars_per_sec)
+    edl = build_edl(timeline, narration, video_id, workspace_of,
+                    chars_per_sec=chars_per_sec)
     (work_dir / "edl.json").write_text(
         json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -163,7 +196,7 @@ def run(work_dir: Path, video_id: str, *, chars_per_sec: float = DEFAULT_CHARS_P
         edl, storyboard_path,
         task_id=video_id,
         title=f"{video_id} 分镜板",
-        frames_base=work_dir,
+        frames_base=PROJECT_ROOT,
     )
 
     return {
