@@ -1,0 +1,42 @@
+# 原神系列 · 类型适配层配置
+# 任务创建时继承（catalog.create_task），task.json 可逐项覆盖
+# 字段含义见设计文档 §2 类型适配层、§4 阶段7
+
+# 画面分级表（E→A 选片优先级；当前硬编码在 stage_index.classify，
+# 此处声明为系列语义文档，后续重构为配置驱动）
+class_table:
+  E: 标志性过场（黑/白屏边界、无 UI、电影化演出）
+  D: 无台词运镜画面（无台词覆盖、无 UI、有动作）
+  C: 高动态画面（战斗/特效，不强制台词覆盖）
+  B: 对话画面（有台词、有运镜/动作）
+  A: 静态对话（有台词、固定机位、带 UI）
+
+# 成片命名模板（字段：task_id/series/version/chapter/video_id）
+title_template: "原神{version}-{chapter}"
+
+# 片头组合（阶段7 composition；src 相对项目根）
+# 素材未到位前留空，到位后填：
+#   - {type: intro_common, src: assets/intros/common.mp4}
+#   - {type: intro_special, src: assets/intros/gs-1.6.mp4}
+composition: []
+
+# 画面变换（裁 LOGO）：放大 10%、上移 60px，UID 水印区出画
+# 冒烟样本验证值；不同录制源 LOGO 位置不同可 per-clip 覆盖
+transform: {scale: 1.10, offset_x: 0, offset_y: -60}
+
+# 字幕模式：overlay（白边描边压画面）/ letterbox（黑边电影画幅，未实现）
+subtitle_mode: overlay
+
+# BGM 歌单（任务级人工指定，与剧情地区/氛围相符；顺序铺设、放完循环）
+# 当前为测试占位（用户提供的临时音乐），正式任务应人工挑选后写入 task.json
+bgm_playlist:
+  - "temp/陈致逸,HOYO-MiX - 希望的明日 Another Hopeful Tomorrow.mp3"
+  - "temp/HOYO-MiX - 熛烬的悼咏 Elogia Cinerosa.mp3"
+
+# TTS 音色（系列固定，任务可覆盖；云 TTS 选型后填具体音色 ID）
+tts:
+  voice: ""        # 占位：当前为 macOS say Tingting
+  speed: 1.1
+
+# 目标正片时长（分钟，不含 raw_insert）
+target_minutes: 15
