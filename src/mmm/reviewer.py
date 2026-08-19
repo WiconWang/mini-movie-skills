@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .db import PROJECT_ROOT
 
-TEMPLATE = (PROJECT_ROOT / ".claude/skills/mini-movie-maker/tools/reviewer/storyboard_template.html")
+TEMPLATE = (PROJECT_ROOT / "skills/mini-movie-maker/tools/reviewer/storyboard_template.html")
 
 
 def _img_data_uri(path: Path, max_bytes: int = 400_000) -> str:

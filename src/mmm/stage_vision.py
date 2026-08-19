@@ -60,10 +60,17 @@ def analyze_frame(frame: Path, model: str = VISION_MODEL) -> dict:
 
 def analyze_shot(video: Path, shot: dict, work_dir: Path,
                  model: str = VISION_MODEL) -> dict:
-    """分析一个镜头：抽帧 + VLM 标签（多帧结果取并集式保守判定）。"""
+    """分析一个镜头：抽帧 + VLM 标签（多帧结果取并集式保守判定）。
+
+    网关致命错误（4xx/5xx 重试耗尽、ffmpeg 抽帧失败等）不炸掉整批，
+    标记 _error 后继续后续镜头；带 _error 的镜头在下次 run 时自动重试。
+    """
     frames_dir = work_dir / "frames" / f"shot_{shot['id']:03d}"
-    frames = extract_frames(video, shot["start"], shot["end"], frames_dir)
-    results = [analyze_frame(f, model) for f in frames]
+    try:
+        frames = extract_frames(video, shot["start"], shot["end"], frames_dir)
+        results = [analyze_frame(f, model) for f in frames]
+    except Exception as e:
+        return {"shot_id": shot["id"], "_error": f"{type(e).__name__}: {e}"}
     ok = [r for r in results if not r.get("_parse_error")]
     if not ok:
         return {"shot_id": shot["id"], "_error": "all_frames_parse_failed"}
@@ -85,20 +92,33 @@ def analyze_shot(video: Path, shot: dict, work_dir: Path,
 def run(video: Path, work_dir: Path, model: str = VISION_MODEL) -> dict:
     """批量分析 workspace 下所有镜头 → shots_meta.json。
 
-    每镜头调用一次 VLM（已含 3s 限速 + 指数退避），失败镜头标记 _error 继续后续。
+    断点续跑：每镜头结果先落盘 shots_meta/shot_XXX.json，已存在且无 _error
+    直接复用（数百次 VLM 调用不可因中途崩溃全丢）；带 _error 的镜头自动重试。
     """
     shots_path = work_dir / "shots.json"
     shots = json.loads(shots_path.read_text())["shots"]
+    metas_dir = work_dir / "shots_meta"
+    metas_dir.mkdir(parents=True, exist_ok=True)
     metas = []
     errors = []
+    reused = 0
     for shot in shots:
+        per_shot_path = metas_dir / f"shot_{shot['id']:03d}.json"
+        if per_shot_path.exists():
+            meta = json.loads(per_shot_path.read_text(encoding="utf-8"))
+            if "_error" not in meta:
+                metas.append(meta)
+                reused += 1
+                continue
         meta = analyze_shot(video, shot, work_dir, model=model)
+        per_shot_path.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         metas.append(meta)
         if "_error" in meta:
             errors.append(shot["id"])
-        # llm.chat 内部已有 3s 限速，这里不再额外 sleep
+        # llm.chat 内部已有限速，这里不再额外 sleep
 
     out = {"model": model, "shots": shots, "metas": metas}
     meta_path = work_dir / "shots_meta.json"
     meta_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"total": len(metas), "errors": errors}
+    return {"total": len(metas), "errors": errors, "reused": reused}

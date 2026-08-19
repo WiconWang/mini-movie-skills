@@ -34,3 +34,12 @@ def record_job(task_id: str, stage: str, status: str, message: str = "") -> None
         (task_id, stage, status, message),
     )
     conn.commit()
+
+
+def job_status(key: str, stage: str) -> str | None:
+    """查询某对象（task_id 或 video_id）在某阶段的状态，无记录返回 None。"""
+    conn = init_db()
+    row = conn.execute(
+        "SELECT status FROM jobs WHERE task_id=? AND stage=?", (key, stage)
+    ).fetchone()
+    return row[0] if row else None

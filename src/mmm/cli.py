@@ -6,9 +6,26 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
 import typer
 
 from . import db
+
+
+def _skip_if_done(key: str, stage: str, *anchors: Path, force: bool = False) -> bool:
+    """断点续跑守卫：jobs 表为 done/gate_waiting 且全部产物锚点存在 → 跳过。
+
+    产物文件才算数（防空跑后误标 done）；--force 强制重跑。
+    """
+    if force:
+        return False
+    if db.job_status(key, stage) not in ("done", "gate_waiting"):
+        return False
+    if not all(a.exists() for a in anchors):
+        return False
+    typer.echo(f"⏭ {key} · {stage} 已完成且产物齐全，跳过（--force 强制重跑）")
+    return True
 
 app = typer.Typer(help="mini-movie-maker：长视频浓缩工作流", no_args_is_help=True)
 run_app = typer.Typer(help="分阶段执行管线（阶段1~7）")
@@ -100,10 +117,9 @@ def run_shots(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
     threshold: float = typer.Option(0.3, "--threshold", "-t", help="场景突变阈值"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段1：场景检测 + 黑白屏检测 → shots.json / fades.json。"""
-    from pathlib import Path
-
     from . import stage_shots
 
     if path:
@@ -112,6 +128,8 @@ def run_shots(
     else:
         video = db.PROJECT_ROOT / "materials" / video_id / "source.mp4"
         out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        if _skip_if_done(video_id, "shots", out_dir / "shots.json", force=force):
+            return
     if not video.exists():
         typer.echo(f"✗ 视频不存在: {video}", err=True)
         raise typer.Exit(1)
@@ -120,6 +138,9 @@ def run_shots(
     typer.echo(f"✓ {video.name}: 时长 {summary['duration']}s, "
                f"切点 {summary['cuts']}, 镜头 {summary['shots']}, 黑白屏 {summary['fades']}")
     typer.echo(f"  产物: {out_dir}/shots.json, fades.json")
+    if not path:
+        db.record_job(video_id, "shots", "done",
+                      f"{summary['shots']} 镜头, 黑白屏 {summary['fades']}")
 
 
 @run_app.command("align")
