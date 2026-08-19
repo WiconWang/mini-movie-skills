@@ -417,9 +417,39 @@ def run_render(
 
 
 @app.command("export-jianying")
-def export_jianying(task_id: str) -> None:
+def export_jianying(
+    task_id: str,
+    drafts_dir: str = typer.Option("", "--drafts-dir", help="剪映草稿根目录（缺省自动探测 ~/Movies/JianyingPro Drafts）"),
+    bgm_volume: float = typer.Option(0.3, "--bgm-volume", help="BGM 轨预设音量（人工精修再调）"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
+) -> None:
     """阶段7 导出器B：生成剪映草稿（单向终点，不回流）。"""
-    raise NotImplementedError("M4 待实现")
+    from . import catalog, stage_jianying
+
+    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    if not (task_dir / "edl.json").exists():
+        typer.echo(f"✗ 缺少 edl.json（先跑 mmm run select --task {task_id}）", err=True)
+        raise typer.Exit(1)
+    cfg = json.loads((task_dir / "task.json").read_text())
+    draft_name = _render_title(cfg)
+
+    dd = Path(drafts_dir) if drafts_dir else stage_jianying.detect_drafts_dir()
+    anchor = dd / draft_name / "draft_content.json" if dd else task_dir / "narration.json"
+    if _skip_if_done(task_id, "export-jianying", anchor, force=force):
+        return
+
+    videos = {v["video_id"]: db.PROJECT_ROOT / v["source_path"] / "source.mp4"
+              for v in catalog.task_videos(task_id)}
+    summary = stage_jianying.export(
+        task_dir, videos, draft_name, task_id=task_id,
+        drafts_dir=Path(drafts_dir) if drafts_dir else None,
+        bgm_playlist=cfg.get("bgm_playlist") or None, bgm_volume=bgm_volume)
+    typer.echo(f"✓ 剪映草稿已生成: {summary['draft_name']}（{summary['clips']} 片段, "
+               f"{summary['duration']}s）")
+    typer.echo(f"  草稿目录: {summary['drafts_dir']}")
+    typer.echo(f"  已登记 footage_usage: {summary['footage_registered']} 个镜头（edl.final.json 已归档）")
+    typer.echo("  ※ 剪映内手调不回流，成片口径以 edl.final.json 为准")
+    db.record_job(task_id, "export-jianying", "done", f"草稿 {summary['draft_name']}")
 
 
 @app.command("catalog-import")

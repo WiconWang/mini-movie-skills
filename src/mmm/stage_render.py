@@ -177,6 +177,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     seg_dir.mkdir(parents=True, exist_ok=True)
 
     seg_files = []
+    seg_durations: list[float] = []   # 实测片段时长（含 TTS 冻结补齐），供字幕对齐成片时间轴
     total = 0.0
     for i, clip in enumerate(clips):
         video = videos.get(clip["video_id"])
@@ -187,7 +188,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             wav = seg_dir / f"tts_{i:03d}.wav"
             tts_say(clip["text"], wav)
         seg_path = seg_dir / f"seg_{i:03d}.mp4"
-        total += render_segment(video, clip, wav, seg_path, transform)
+        seg_dur = render_segment(video, clip, wav, seg_path, transform)
+        seg_durations.append(seg_dur)
+        total += seg_dur
         seg_files.append(seg_path)
 
     # concat（各片段编码参数一致，可 -c copy 无损拼接；路径需绝对，避免相对基准歧义）
@@ -218,7 +221,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     if subtitle_mode == "overlay":
         from . import stage_subtitle
 
-        subs = stage_subtitle.run(work_dir, mode="overlay")
+        subs = stage_subtitle.run(work_dir, mode="overlay", seg_durations=seg_durations)
         if _has_ass_filter():
             tmp_out = out_path or work_dir / "render_sub.mp4"
             _burn_subtitles(raw_path, Path(subs["ass"]), tmp_out)

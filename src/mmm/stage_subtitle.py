@@ -70,17 +70,36 @@ def _to_ass_time(sec: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
+def _output_spans(clips: list[dict],
+                  seg_durations: list[float] | None = None) -> dict[int, tuple[float, float]]:
+    """EDL 顺序 → 成片时间轴上每个 narration_clip 的 (start, end)，按 narration_id 索引。
+
+    字幕烧在 concat 后的成片上，必须用**成片时间轴**（各片段时长累计），
+    不能用 clip 里的源视频本地时间。seg_durations 为渲染实测片段时长
+    （含 TTS 超长冻结补齐），缺省退化为源区间时长（raw_insert 也占位）。
+    """
+    spans: dict[int, tuple[float, float]] = {}
+    t = 0.0
+    for i, c in enumerate(clips):
+        dur = seg_durations[i] if seg_durations else c["end"] - c["start"]
+        if c.get("type") == "narration_clip":
+            spans[c["narration_id"]] = (t, t + dur)
+        t += dur
+    return spans
+
+
 def build_subtitles(narration: list[dict], clips: list[dict],
-                    mode: str = "overlay") -> str:
+                    mode: str = "overlay",
+                    seg_durations: list[float] | None = None) -> str:
     """生成 ASS 字幕内容。
 
-    narration 与 clips 按 narration_id 一一对应，每句字幕对齐到对应片段的
-    全局起止时间。当前先实现 overlay 模式。
+    narration 与 clips 按 narration_id 一一对应，每句字幕对齐到对应片段在
+    **成片时间轴**上的起止时间。当前先实现 overlay 模式。
     """
     if mode != "overlay":
         raise NotImplementedError(f"字幕模式 {mode} 尚未实现")
 
-    clip_by_nid = {c["narration_id"]: c for c in clips if c.get("type") == "narration_clip"}
+    spans = _output_spans(clips, seg_durations)
     ass_header = """[Script Info]
 Title: mini-movie-maker subtitles
 ScriptType: v4.00+
@@ -97,19 +116,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     events = []
     for n in narration:
         nid = n["id"]
-        clip = clip_by_nid.get(nid)
-        if not clip:
+        span = spans.get(nid)
+        if not span:
             continue
-        t0 = clip["start"]
+        t0, t1 = span
         lines = _split_lines(n["text"])
         if not lines:
             continue
         # 每行按字数分配时长，但受 [1.0, 6.0]s 约束
-        total_dur = clip["end"] - clip["start"]
+        total_dur = t1 - t0
         per_line = max(LINE_DURATION_MIN, min(total_dur / len(lines), LINE_DURATION_MAX))
         for i, line in enumerate(lines):
             start = t0 + i * per_line
-            end = min(t0 + (i + 1) * per_line, clip["end"])
+            end = min(t0 + (i + 1) * per_line, t1)
             if end <= start:
                 continue
             events.append(
@@ -118,24 +137,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return ass_header + "\n".join(events) + "\n"
 
 
-def build_srt(narration: list[dict], clips: list[dict]) -> str:
-    """生成 SRT 软字幕（ffmpeg 无 libass 时的 fallback）。"""
-    clip_by_nid = {c["narration_id"]: c for c in clips if c.get("type") == "narration_clip"}
+def build_srt(narration: list[dict], clips: list[dict],
+              seg_durations: list[float] | None = None) -> str:
+    """生成 SRT 软字幕（ffmpeg 无 libass 时的 fallback）。时间轴同 build_subtitles。"""
+    spans = _output_spans(clips, seg_durations)
     entries = []
     idx = 1
     for n in narration:
-        clip = clip_by_nid.get(n["id"])
-        if not clip:
+        span = spans.get(n["id"])
+        if not span:
             continue
-        t0 = clip["start"]
+        t0, t1 = span
         lines = _split_lines(n["text"])
         if not lines:
             continue
-        total_dur = clip["end"] - clip["start"]
+        total_dur = t1 - t0
         per_line = max(LINE_DURATION_MIN, min(total_dur / len(lines), LINE_DURATION_MAX))
         for i, line in enumerate(lines):
             start = t0 + i * per_line
-            end = min(t0 + (i + 1) * per_line, clip["end"])
+            end = min(t0 + (i + 1) * per_line, t1)
             if end <= start:
                 continue
             entries.append(
@@ -153,12 +173,17 @@ def _to_srt_time(sec: float) -> str:
     return f"{h:02d}:{m:02d}:{int(s):02d},{ms:03d}"
 
 
-def run(work_dir: Path, mode: str = "overlay") -> dict:
-    """从 narration.json + edl.json 生成字幕文件（ASS + SRT fallback）。"""
+def run(work_dir: Path, mode: str = "overlay",
+        seg_durations: list[float] | None = None) -> dict:
+    """从 narration.json + edl.json 生成字幕文件（ASS + SRT fallback）。
+
+    seg_durations：渲染实测的各片段时长（含 TTS 冻结补齐），用于对齐成片时间轴；
+    缺省按源区间时长累计（与成片可能有出入，仅在未渲染时使用）。
+    """
     narration = json.loads((work_dir / "narration.json").read_text())["narration"]
     edl = json.loads((work_dir / "edl.json").read_text())
-    ass = build_subtitles(narration, edl["clips"], mode=mode)
-    srt = build_srt(narration, edl["clips"])
+    ass = build_subtitles(narration, edl["clips"], mode=mode, seg_durations=seg_durations)
+    srt = build_srt(narration, edl["clips"], seg_durations=seg_durations)
     (work_dir / "subtitles.ass").write_text(ass, encoding="utf-8")
     (work_dir / "subtitles.srt").write_text(srt, encoding="utf-8")
     return {"ass": str(work_dir / "subtitles.ass"), "srt": str(work_dir / "subtitles.srt")}

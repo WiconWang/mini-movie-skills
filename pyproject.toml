@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.1"]
+jianying = ["pyJianYingDraft>=0.3"]
 
 [project.scripts]
 mmm = "mmm.cli:app"
