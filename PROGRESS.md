@@ -49,13 +49,14 @@ mmm status                    # 台账就绪
 | 阶段4 索引融合 | ✅ 完成 | `stage_index.py` + `run_index` CLI；C级规则修正为高动态不强制台词，验证分布 C=4/A=18 |
 | 阶段5 解说稿生成 | ✅ MVP通过 | `stage_narrate.py` + `run_narrate` CLI；deepseek-v4-flash 输出引用台词ID，闸口1 Markdown 已生成 |
 | 阶段6 选片+EDL | ✅ MVP通过 | `stage_select.py` + `run_select` CLI；E→A 优先级选取 + 时长匹配；分镜板已生成；TTS 时长暂按字数估算，footage_usage 落 JSON 未接台账 |
-| 阶段7 合成导出 | ✅ MVP通过 | `stage_render.py` + `run render` CLI；macOS say(Tingting) 占位 TTS + ffmpeg 片段级音画对齐 + concat 直出；冒烟 20片段→120s MP4；待补：云TTS/BGM/字幕/transform/片头/剪映导出 |
+| 阶段7 合成导出 | ✅ MVP通过 | `stage_render.py` + `run render` CLI；macOS say(Tingting) 占位 TTS + ffmpeg 片段级音画对齐 + concat 直出；冒烟 20片段→120s MP4；待补：云TTS、剪映导出 |
 | 台账闭环 | ✅ 完成 | `mmm add`（物料校验+台词预检）、`task-create`（task_map+task.json+系列配置继承）、阶段4.5 全局时间轴合流 `build_global`（offset 表，合成双视频测试通过）、jobs 打点、narrate/select/render 均支持 task 模式 |
 | footage_usage 闭环 | ✅ 完成 | 选片查台账排除已占用镜头（耗尽兜底标 needs_review）；导出时按 EDL 登记 + 归档 edl.final.json |
 | 多视频全局对齐 | ✅ 完成 | `run align --task`：逐视频 ASR 断点复用 → offset 拼全局词流 → 整份台词一次对齐 → 拆回各视频本地时间；合成双视频测试通过；顺带修复 load_script 丢失 voiced 字段的 bug |
-| 阶段7 打磨 | 🚧 进行中 | transform 裁 LOGO（系列级+per-clip 覆盖）、成片命名模板渲染（task.json title_template）已接；待补：云TTS、BGM、字幕、片头 |
+| 阶段7 打磨 | ✅ 完成 | transform 裁 LOGO（系列级+per-clip 覆盖）、成片命名模板、BGM 轨（loudnorm+crossfade+ducking）、字幕（ASS 硬字幕/SRT 软字幕 fallback）、片头拼接 composition 全部接入；待补仅云TTS |
+| 断点续跑 | ✅ 完成 | 各阶段 `--force` + 守卫（jobs=done 且产物锚点存在才跳过）；vision 逐镜头落盘 shots_meta/ 防整批丢失；shots/align/vision/index 补 record_job 打点；index 缺 vision 产物时不标 done |
 | 导出器B 剪映草稿 | ⬜ 未开始 | pyJianYingDraft |
-| SKILL.md 同步 | ⬜ 未开始 | 当前命令手册未收录 add/task-create/run --task 等新命令 |
+| SKILL.md 同步 | ✅ 完成 | 命令手册全量更新；目录已从 .claude/skills/ 迁移至 skills/（CC-Switch 规范） |
 
 ## 三、待办任务清单（按优先级）
 
