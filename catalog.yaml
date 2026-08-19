@@ -13,3 +13,24 @@ videos:
     version: "1.6"
     chapter: 迷境之岛！无法预测的旅行
     path: materials/gs-16-mjzd
+  # 1.6 盛夏海岛大冒险 全章五段（P1/P3~P5 为按段物料，源文件符号链接自 temp/）
+  - video_id: gs-16-p1
+    series: 原神
+    version: "1.6"
+    chapter: 盛夏海岛大冒险-P1
+    path: materials/gs-16-p1
+  - video_id: gs-16-p3
+    series: 原神
+    version: "1.6"
+    chapter: 夏日征程！千万要注意安全
+    path: materials/gs-16-p3
+  - video_id: gs-16-p4
+    series: 原神
+    version: "1.6"
+    chapter: 海中魔王！静候已久之人
+    path: materials/gs-16-p4
+  - video_id: gs-16-p5
+    series: 原神
+    version: "1.6"
+    chapter: 最终谜题！秘藏至今的答案
+    path: materials/gs-16-p5
