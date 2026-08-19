@@ -16,7 +16,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 
 ## 闸口协议（铁律）
 
-1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.json` 的评审稿，不得擅自执行 `select`
+1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`
 2. `mmm run select` 完成后**必须停下**，通知用户审 `storyboard.html`，用户可能已手改 `edl.json`
 3. 用户口头确认「通过」即闸门开关；继续前校验产物（JSON 可解析、引用 ID 存在）
 4. 可以替用户做的：读打回意见重跑、重跑受影响片段、解释选镜理由
@@ -33,9 +33,37 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | 命令 | 用途 |
 |------|------|
 | `mmm db-init` | 初始化台账（迁移后第一步） |
-| `mmm add <视频> [台词]` | 登记素材 + 预检 |
-| `mmm task-create --videos a,b,c` | 建任务（顺序即 seq） |
-| `mmm run shots/align/vision/index <video_id>` | 阶段1~4 |
-| `mmm run narrate/select/render <task_id>` | 阶段5~7 |
-| `mmm export-jianying <task_id>` | 剪映草稿 |
+| `mmm add <video_id> --series <系列> [--version] [--chapter]` | 登记素材 + 台词预检 |
+| `mmm task-create <task_id> --videos a,b,c [--series]` | 建任务（顺序即 seq），生成 task.json |
+| `mmm run shots <video_id>` | 阶段1：镜头切分 + 黑白屏检测 |
+| `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐 |
+| `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5） |
+| `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
+| `mmm run narrate <task_id>` | 阶段5：解说稿生成 → 闸口1 |
+| `mmm run select <task_id>` | 阶段6：选片 + footage_usage 排除 + 分镜板 → 闸口2 |
+| `mmm run render --task <task_id>` | 阶段7：ffmpeg 直出（含 transform/BGM/字幕/片头拼接） |
+| `mmm export-jianying <task_id>` | 导出器B：剪映草稿（单向终点） |
 | `mmm status / locate / find` | 进度 / 路径直查 / 模糊检索 |
+
+## 冒烟测试入口（免台账）
+
+用于开发调试，跳过 catalog/task：
+
+```bash
+mmm run shots --path <视频文件>
+mmm run align --path <视频> --script <台词.jsonl>
+mmm run index --path <workspace 目录>
+mmm run narrate --timeline <timeline.json> [--target-minutes N]
+mmm run select --path <workspace 目录>
+mmm run render --path <workspace> --video <视频> [--bgm "a.mp3;b.mp3"] [--subtitle overlay]
+```
+
+## 系列配置（类型适配层）
+
+`config/series/{系列}.yaml` 控制分级表、命名模板、composition、transform、subtitle_mode、TTS 音色、bgm_playlist。任务创建时继承系列默认，task.json 可覆盖。
+
+## 闸口产物位置
+
+- 闸口1：`tasks/{task_id}/narration.md`（解说稿审阅）
+- 闸口2：`tasks/{task_id}/storyboard.html`（分镜板）
+- 最终成片：`output/{task_id}/{title}.mp4`（含 `edl.final.json` 归档）
