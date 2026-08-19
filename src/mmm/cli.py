@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -150,13 +151,20 @@ def run_align(
     script: str = typer.Option("", "--script", help="台词 JSONL 路径（冒烟测试用）"),
     model: str = typer.Option("medium", "--model", "-m", help="ASR 模型档位"),
     task: str = typer.Option("", "--task", help="任务模式：多视频全局对齐（台词横跨全部视频）"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段2：ASR + 台词对齐 → asr.json / lines.json（含覆盖率报告）。"""
-    from pathlib import Path
-
     from . import stage_asr
 
     if task:
+        from . import catalog
+
+        task_dir = db.PROJECT_ROOT / "tasks" / task
+        anchors = [task_dir / "align_global.json"] + [
+            db.PROJECT_ROOT / "workspace" / v["video_id"] / "lines.json"
+            for v in catalog.task_videos(task)]
+        if _skip_if_done(task, "align", *anchors, force=force):
+            return
         report = stage_asr.align_task(task, model)
         typer.echo(f"✓ 任务 {task} 全局对齐: 总行数 {report['total']}, "
                    f"matched {report['matched']}, interpolated {report['interpolated']}, "
@@ -177,6 +185,8 @@ def run_align(
         base = db.PROJECT_ROOT / "materials" / video_id
         video, script_p = base / "source.mp4", base / "script.jsonl"
         out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        if _skip_if_done(video_id, "align", out_dir / "lines.json", force=force):
+            return
     for p in (video, script_p):
         if not p.exists():
             typer.echo(f"✗ 文件不存在: {p}", err=True)
@@ -189,6 +199,8 @@ def run_align(
     if report["coverage"] < 0.85:
         typer.echo("⚠ 覆盖率低于 85%，建议人工核查物料（设计文档 §6 风险表）")
     typer.echo(f"  产物: {out_dir}/asr.json, lines.json")
+    if not (path and script):
+        db.record_job(video_id, "align", "done", f"覆盖率 {report['coverage']:.1%}")
 
 
 @run_app.command("vision")
@@ -196,10 +208,9 @@ def run_vision(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
     model: str = typer.Option("mimo-v2.5", "--model", "-m", help="视觉模型"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段3：抽帧 + 视觉理解 → shots_meta.json。"""
-    from pathlib import Path
-
     from . import stage_vision
 
     if path:
@@ -208,29 +219,38 @@ def run_vision(
     else:
         video = db.PROJECT_ROOT / "materials" / video_id / "source.mp4"
         out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        if _skip_if_done(video_id, "vision", out_dir / "shots_meta.json", force=force):
+            return
     if not video.exists():
         typer.echo(f"✗ 视频不存在: {video}", err=True)
         raise typer.Exit(1)
 
     summary = stage_vision.run(video, out_dir, model=model)
-    typer.echo(f"✓ {video.name}: 分析 {summary['total']} 个镜头, 失败 {len(summary['errors'])}")
+    reused = summary.get("reused", 0)
+    typer.echo(f"✓ {video.name}: 分析 {summary['total']} 个镜头"
+               f"{f'（断点复用 {reused}）' if reused else ''}, 失败 {len(summary['errors'])}")
     typer.echo(f"  产物: {out_dir}/shots_meta.json")
+    if not path:
+        status = "done" if not summary["errors"] else "failed"
+        db.record_job(video_id, "vision", status,
+                      f"{summary['total']} 镜头, 失败 {summary['errors']}")
 
 
 @run_app.command("index")
 def run_index(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段4：合并时间轴索引 → timeline.json。"""
-    from pathlib import Path
-
     from . import stage_index
 
     if path:
         out_dir = Path(path)
     else:
         out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        if _skip_if_done(video_id, "index", out_dir / "timeline.json", force=force):
+            return
     if not (out_dir / "shots.json").exists():
         typer.echo(f"✗ workspace 不存在或缺少 shots.json: {out_dir}", err=True)
         raise typer.Exit(1)
@@ -240,6 +260,15 @@ def run_index(
     typer.echo(f"✓ 时间轴索引已生成: {stats['shots']} 镜头, "
                f"E={by_class['E']} D={by_class['D']} C={by_class['C']} B={by_class['B']} A={by_class['A']}")
     typer.echo(f"  产物: {out_dir}/timeline.json")
+    if not path:
+        if (out_dir / "shots_meta.json").exists():
+            db.record_job(video_id, "index", "done",
+                          f"{stats['shots']} 镜头, 分级 {by_class}")
+        else:
+            # 无 vision 产物时分级全 A，是中间态而非完成态——不打 done，
+            # 否则 vision 补跑后守卫会错误跳过 index 重跑
+            typer.echo("⚠ 缺少 shots_meta.json（阶段3 未跑），分级退化为全 A；"
+                       "不标记完成，vision 完成后请重跑 index")
 
 
 @run_app.command("narrate")
@@ -247,10 +276,9 @@ def run_narrate(
     task_id: str = typer.Argument(""),
     timeline: str = typer.Option("", "--timeline", help="直接给 timeline.json 路径（冒烟测试用，跳过 task_id）"),
     target_minutes: float = typer.Option(15.0, "--target-minutes", "-t", help="目标正片时长（分钟）"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。"""
-    from pathlib import Path
-
     from . import stage_index, stage_narrate
 
     if timeline:
@@ -258,6 +286,9 @@ def run_narrate(
         out_dir = timeline_path.parent
     elif task_id:
         out_dir = db.PROJECT_ROOT / "tasks" / task_id
+        if _skip_if_done(task_id, "narrate", out_dir / "narration.json",
+                         out_dir / "narration.md", force=force):
+            return
         timeline_path = out_dir / "global_timeline.json"
         if not timeline_path.exists():
             # 阶段4.5：多视频合流（单视频任务同样走此路径，结构统一）
@@ -286,14 +317,16 @@ def run_select(
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     task: str = typer.Option("", "--task", help="任务模式：读 tasks/{task_id} 的 narration + 全局时间轴"),
     chars_per_sec: float = typer.Option(4.5, "--chars-per-sec", help="TTS 语速估算（字/秒）"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段6：选片段 + 自检回环 + 分镜板。完成后进入闸口2，等待人工确认。"""
-    from pathlib import Path
-
     from . import stage_select
 
     if task:
         out_dir = db.PROJECT_ROOT / "tasks" / task
+        if _skip_if_done(task, "select", out_dir / "edl.json",
+                         out_dir / "storyboard.html", force=force):
+            return
         summary = stage_select.run(out_dir, task, timeline_name="global_timeline.json",
                                    exclude_task=task, chars_per_sec=chars_per_sec)
         db.record_job(task, "select", "gate_waiting", "等待闸口2人工审阅 storyboard.html")
@@ -324,10 +357,9 @@ def run_render(
     task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频 + 命名模板 + transform + BGM + 字幕"),
     bgm: str = typer.Option("", "--bgm", help="BGM 播放列表（分号分隔路径），缺省用 task.json bgm_playlist"),
     subtitle: str = typer.Option("", "--subtitle", help="字幕模式 overlay/letterbox/none，缺省用 task.json subtitle_mode"),
+    force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段7 导出器A：ffmpeg 直出 MP4（MVP：本机 say 占位 TTS）。"""
-    from pathlib import Path
-
     from . import catalog, stage_render
 
     if task:
@@ -339,6 +371,8 @@ def run_render(
         out_dir = db.PROJECT_ROOT / "output" / task
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{out_name}.mp4"
+        if _skip_if_done(task, "render", out_path, force=force):
+            return
         work_dir = task_dir
         # BGM：CLI --bgm 优先，否则用 task.json bgm_playlist
         from . import stage_bgm
