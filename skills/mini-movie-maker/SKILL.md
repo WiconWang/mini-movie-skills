@@ -45,6 +45,10 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | `mmm export-jianying <task_id>` | 导出器B：剪映草稿（单向终点） |
 | `mmm status / locate / find` | 进度 / 路径直查 / 模糊检索 |
 
+**断点续跑**：所有 `mmm run` / `export-jianying` 阶段命令启动时自动检查 jobs 表——
+已完成（done/gate_waiting）且产物存在则跳过，加 `--force` 强制重跑。
+vision 阶段逐镜头落盘 `shots_meta/shot_XXX.json`，中断重跑只补缺失/失败镜头。
+
 ## 冒烟测试入口（免台账）
 
 用于开发调试，跳过 catalog/task：
