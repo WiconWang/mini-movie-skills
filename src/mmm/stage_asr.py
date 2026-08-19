@@ -1,7 +1,8 @@
 """阶段2 集成：ASR 转录 → 台词对齐 → lines.json。
 
 ASR 职责（设计文档）：只当钟用不当文本源——取词级时间戳，文本弃用。
-实测选型：faster-whisper small（4.7 倍实时，本机 CPU int8）。
+实测选型：faster-whisper medium+VAD+关上下文连锁（25 倍实时、无幻觉）；
+small 档 4.7 倍但幻觉严重，已淘汰。
 """
 
 from __future__ import annotations

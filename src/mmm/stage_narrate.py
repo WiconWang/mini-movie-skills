@@ -51,6 +51,10 @@ def _build_prompt(timeline: dict, target_minutes: float) -> str:
         )
 
     target_chars = int(target_minutes * CHARS_PER_MINUTE)
+    # 全量索引进 prompt（deepseek-v4-flash 1M 上下文余量充足，不截断；
+    # 真超长的极端场景（数小时×多视频）再考虑分段摘要，届时按场景切分而非行数截断）
+    lines_block = chr(10).join(line_texts)
+    shots_block = chr(10).join(shot_texts)
     prompt = f"""你是一位剧情向短视频解说撰稿人。请根据下面的素材索引，撰写一段约 {target_minutes} 分钟（约 {target_chars} 字）的解说稿。
 
 要求：
@@ -58,16 +62,16 @@ def _build_prompt(timeline: dict, target_minutes: float) -> str:
 2. 解说人格活泼、有情绪温度，但事实是铁证；全程用第三人称叙述。
 3. 每句解说必须标注它依据了哪些台词行（related_line_ids），可引用 1~5 个连续或分散的行 ID。
 4. 不要输出具体时间秒数，只输出引用的台词行 ID；时间区间由后续程序自动补写。
-5. 解说句数量控制在 15~30 句之间，覆盖故事的起承转合（起因、转折、结局）。
+5. 解说句数量控制在 15~30 句之间，覆盖故事的起承转合（起因、转折、结局），**完整覆盖全部台词段，不得遗漏后半段情节**。
 6. 忽略标为 "-"（unvoiced）的无配音行，除非它对理解剧情必不可少。
 
 素材索引：
 
 【台词表】标记说明：✓=ASR直接匹配, ~=插值估计, ?=未匹配/可能未录, -=无配音
-{chr(10).join(line_texts[:400])}  {"……（后续台词省略）" if len(line_texts) > 400 else ""}
+{lines_block}
 
 【镜头表】标记说明：E/D/C/B/A 为画面优先级（E最高，A最低）
-{chr(10).join(shot_texts[:150])}  {"……（后续镜头省略）" if len(shot_texts) > 150 else ""}
+{shots_block}
 
 整体统计：{stats.get('shots', 0)} 镜头，分级 {stats.get('by_class', {})}。
 
