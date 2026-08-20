@@ -28,6 +28,23 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 - 一切定位用 `(video_id, 源内时间)`，禁止成片绝对时间（相对时间轴铁律）
 - 台账操作走 `pipeline.sqlite`（结构见 `db/schema.sql`）
 
+## 保留区间配置（raw_insert）
+
+用户可用自然语言指定「原始素材哪些位置要保留原声/保留画面」，写入 `tasks/{task_id}/task.json` 的 `keep_requirements` 数组，select 阶段自动生成 raw_insert 片段（原声原画）并入 EDL。
+
+```json
+"keep_requirements": [
+  {"video_id": "gs-16-p1", "start": 300.5, "end": 320.0, "note": "第5分钟战斗原声"},
+  {"video_id": "gs-16-p1", "start": 600.0, "end": 615.0, "note": "名场面保留"}
+]
+```
+
+- `start/end` 为**源视频内本地秒数**（相对时间轴铁律）
+- 区间内不排解说句；解说片段与保留区间重叠时自动裁剪避让
+- 插入后**后续内容整体后移**（成片时间轴自动累计，零成本）
+- BGM 全局 50%，raw_insert 段额外压低（-26dB），**区间结束自动恢复**
+- 操作方式：用户自然语言说明 → 写入 task.json → 重跑 `mmm run select --task <id>` + `mmm run render --task <id>`
+
 ## 命令手册
 
 | 命令 | 用途 |

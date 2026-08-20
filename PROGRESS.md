@@ -48,8 +48,8 @@ mmm status                    # 台账就绪
 | 阶段3 视觉理解 | ✅ 原型通过 | `stage_vision.py` + `run_vision` CLI；mimo-v2.5 全量分析22镜头，UI/动态/角色识别准确 |
 | 阶段4 索引融合 | ✅ 完成 | `stage_index.py` + `run_index` CLI；C级规则修正为高动态不强制台词，验证分布 C=4/A=18 |
 | 阶段5 解说稿生成 | ✅ MVP通过 | `stage_narrate.py` + `run_narrate` CLI；deepseek-v4-flash 输出引用台词ID，闸口1 Markdown 已生成 |
-| 阶段6 选片+EDL | ✅ MVP通过 | `stage_select.py` + `run_select` CLI；E→A 优先级选取 + 时长匹配；分镜板已生成；TTS 时长暂按字数估算，footage_usage 落 JSON 未接台账 |
-| 阶段7 合成导出 | ✅ MVP通过 | `stage_render.py` + `run render` CLI；edge-tts 验证级 TTS（synthesize 统一入口，say/edge 双引擎）+ ffmpeg 片段级音画对齐 + concat 直出；冒烟 20片段→120s MP4；待补：正式云TTS选型 |
+| 阶段6 选片+EDL | ✅ 完成 | E→A 优先级选取 + footage_usage 复用排除 + 候选兜底 + 分镜板；**保留区间**（task.json keep_requirements → raw_insert 原声段，区间不排解说，解说片段避让裁剪）；**操作界面镜头排除**（has_ui+关键词）；负区间修复（min/max 包络）；hd-p1 真机 28 片段 EDL 验证通过 |
+| 阶段7 合成导出 | ✅ 完成 | `stage_render.py` + `run render` CLI；edge-tts 验证级 TTS（synthesize 统一入口）+ **片段时长以声音为准**（画面剪切、声音连续无空白）+ **static ffmpeg(libass) ASS 硬字幕** + **BGM 全局 50% + 分段 ducking（raw 段压低且结束恢复）** + 片头 composition + transform 顶部对齐；hd-p1 真机产出 317.7s 成片；待补：正式云TTS选型 |
 | 台账闭环 | ✅ 完成 | `mmm add`（物料校验+台词预检）、`task-create`（task_map+task.json+系列配置继承）、阶段4.5 全局时间轴合流 `build_global`（offset 表，合成双视频测试通过）、jobs 打点、narrate/select/render 均支持 task 模式 |
 | footage_usage 闭环 | ✅ 完成 | 选片查台账排除已占用镜头（耗尽兜底标 needs_review）；导出时按 EDL 登记 + 归档 edl.final.json |
 | 多视频全局对齐 | ✅ 完成 | `run align --task`：逐视频 ASR 断点复用 → offset 拼全局词流 → 整份台词一次对齐 → 拆回各视频本地时间；合成双视频测试通过；顺带修复 load_script 丢失 voiced 字段的 bug |
