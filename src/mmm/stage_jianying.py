@@ -36,10 +36,10 @@ def detect_drafts_dir() -> Path | None:
     return None
 
 
-def _clip_settings(transform: dict):
+def _clip_settings(transform: dict, out_w: int = 1920, out_h: int = 1080):
     """系列 transform（ffmpeg crop 语义）→ 剪映 ClipSettings。
 
-    单位换算：剪映位移以「半画布宽/高」为单位（1280x720 → x/640, y/360），
+    单位换算：剪映位移以「半画布宽/高」为单位（如 1920x1080 → x/960, y/540），
     且 y 轴负向朝下（剪映字幕底部参考值 -0.8），与 ffmpeg crop 偏移方向相反。
     """
     import pyJianYingDraft as draft
@@ -47,8 +47,8 @@ def _clip_settings(transform: dict):
     scale = transform.get("scale", 1.0)
     return draft.ClipSettings(
         scale_x=scale, scale_y=scale,
-        transform_x=transform.get("offset_x", 0) / (WIDTH / 2),
-        transform_y=-transform.get("offset_y", 0) / (HEIGHT / 2),
+        transform_x=transform.get("offset_x", 0) / (out_w / 2),
+        transform_y=-transform.get("offset_y", 0) / (out_h / 2),
     )
 
 
@@ -70,15 +70,20 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
 
-    # transform / TTS 继承链与导出器A 相同：task.json（系列继承）> edl 级 > per-clip 覆盖
+    # transform / TTS / 输出规格继承链与导出器A 相同：task.json（系列继承）> edl 级 > per-clip 覆盖
     transform = edl.get("transform") or {}
     tts_cfg: dict = {}
+    out_w, out_h, out_fps = 1920, 1080, 30
     if task_id:
         cfg_path = PROJECT_ROOT / "tasks" / task_id / "task.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
             transform = cfg.get("transform") or transform
             tts_cfg = cfg.get("tts") or {}
+            out_cfg = cfg.get("output") or {}
+            out_w = int(out_cfg.get("width", out_w))
+            out_h = int(out_cfg.get("height", out_h))
+            out_fps = int(out_cfg.get("fps", out_fps))
 
     drafts_dir = drafts_dir or detect_drafts_dir()
     if drafts_dir is None:
@@ -93,7 +98,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
     seg_dir.mkdir(parents=True, exist_ok=True)
 
     folder = draft.DraftFolder(str(drafts_dir))
-    script = folder.create_draft(draft_name, WIDTH, HEIGHT, fps=FPS, allow_replace=True)
+    script = folder.create_draft(draft_name, out_w, out_h, fps=out_fps, allow_replace=True)
     video_track = script.append_track(draft.TrackSpec(draft.TrackType.video, name="正片"))
     tts_track = script.append_track(draft.TrackSpec(draft.TrackType.audio, name="解说"))
 
@@ -122,7 +127,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
             draft.trange(t_us, round(v_dur * 1e6)),
             source_timerange=draft.trange(round(clip["start"] * 1e6), round(v_dur * 1e6)),
             volume=1.0 if clip.get("keep_audio") else 0.0,
-            clip_settings=_clip_settings(xf),
+            clip_settings=_clip_settings(xf, out_w, out_h),
         ), video_track)
         if wav is not None and a_dur > 0:
             # 时长以剪映探测的素材时长为准（ms 精度），ffprobe 更精确会溢出几百 µs
