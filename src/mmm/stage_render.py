@@ -13,6 +13,7 @@ MVP 约定（与最终设计的差距，逐步补齐）：
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -103,10 +104,24 @@ def _mix_with_bgm(video: Path, bgm: Path, out: Path) -> None:
     ])
 
 
-def _bgm_duck_regions(clips: list[dict]) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
-    """从 EDL 提取 narration 与 raw_insert 区间（全局时间）。"""
-    narration = [(c["start"], c["end"]) for c in clips if c.get("type") == "narration_clip"]
-    raw_insert = [(c["start"], c["end"]) for c in clips if c.get("type") == "raw_insert"]
+def _bgm_duck_regions(clips: list[dict],
+                      seg_durations: list[float] | None = None
+                      ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """从 EDL 提取 narration 与 raw_insert 在**成片时间轴**上的区间。
+
+    与字幕同源：BGM ducking 发生在 concat 之后，必须用从 0 累计的成片时间，
+    不能用 clip 的源视频本地 start/end。seg_durations 为渲染实测片段时长
+    （含 TTS 超长冻结补齐），缺省退化为源区间时长。
+    """
+    narration, raw_insert = [], []
+    t = 0.0
+    for i, c in enumerate(clips):
+        dur = seg_durations[i] if seg_durations else c["end"] - c["start"]
+        if c.get("type") == "narration_clip":
+            narration.append((t, t + dur))
+        elif c.get("type") == "raw_insert":
+            raw_insert.append((t, t + dur))
+        t += dur
     return narration, raw_insert
 
 
@@ -205,7 +220,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     if bgm_playlist:
         from . import stage_bgm
 
-        narration_regions, raw_regions = _bgm_duck_regions(clips)
+        narration_regions, raw_regions = _bgm_duck_regions(clips, seg_durations)
         bgm_path = stage_bgm.build_bgm_track(
             bgm_playlist, total,
             narration_regions=narration_regions,
