@@ -11,9 +11,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .media import ffmpeg_bin, probe_duration
+
 CROSSFADE_SEC = 2.0
-DUCK_DB = -14.0     # 解说段 BGM 音量
-RAW_INSERT_DUCK_DB = -20.0
+MASTER_VOLUME = 0.5       # 全局 BGM 音量（用户要求整体压低 50%，约 -6dB）
+DUCK_DB = -14.0           # 解说段 BGM 在基础音量上再压低
+RAW_INSERT_DUCK_DB = -20.0   # raw_insert 段再压低（合计 -26dB，避免与素材原声重叠）
 SAMPLE_RATE = 48000
 CHANNELS = 2        # BGM 保持立体声，混音前再 downmix 由调用方决定
 
@@ -24,17 +27,9 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"BGM 命令失败: {' '.join(cmd[:6])}...\n{r.stderr.decode()[-800:]}")
 
 
-def _duration(path: Path) -> float:
-    out = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(path)],
-        check=True, capture_output=True, text=True).stdout.strip()
-    return float(out)
-
-
 def _normalize(bgm: Path, out: Path) -> None:
     """统一采样率/声道，避免 concat 因参数不一致失败。"""
-    _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(bgm),
+    _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(bgm),
           "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "-af", "loudnorm=I=-16:TP=-1.5",
           str(out)])
 
@@ -65,7 +60,7 @@ def build_bgm_track(
     if not files:
         # 无 BGM 配置：输出静音轨
         out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm_silence.wav")
-        _run(["ffmpeg", "-y", "-v", "quiet", "-f", "lavfi", "-i",
+        _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "lavfi", "-i",
               f"anullsrc=r={SAMPLE_RATE}:cl=stereo", "-t", str(total_duration),
               "-ac", str(CHANNELS), str(out_path)])
         return out_path
@@ -81,13 +76,13 @@ def build_bgm_track(
         # 1. 把每首 BGM 延长到 total_duration（循环）
         looped = []
         for i, norm in enumerate(normalized):
-            dur = _duration(norm)
+            dur = probe_duration(norm)
             loops = max(int(total_duration // dur) + 2, 2)
             concat_list = tmpdir / f"loop_{i}.txt"
             concat_list.write_text(
                 "".join(f"file '{norm}'\n" for _ in range(loops)))
             looped_wav = tmpdir / f"looped_{i}.wav"
-            _run(["ffmpeg", "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
+            _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
                   "-i", str(concat_list), "-t", str(total_duration),
                   "-c", "copy", str(looped_wav)])
             looped.append(looped_wav)
@@ -102,7 +97,7 @@ def build_bgm_track(
             for nxt in looped[1:]:
                 out_mix = tmpdir / f"mix_{id(nxt)}.wav"
                 _run([
-                    "ffmpeg", "-y", "-v", "quiet",
+                    ffmpeg_bin(), "-y", "-v", "quiet",
                     "-i", str(mixed), "-i", str(nxt),
                     "-filter_complex",
                     f"[0:a]atrim=end={seg_dur}[a0];"
@@ -122,9 +117,13 @@ def build_bgm_track(
 
         if duck_expr_parts:
             enable = "+".join(duck_expr_parts)
-            # raw_insert 区间也落在 narration_regions 内时，取更低压低值
-            # 简化：先统一压 -14dB，再对 raw_insert 额外压 -6dB（合计 -20dB）
-            volume_filter = f"volume={10**(DUCK_DB/20):.4f}:enable='{enable}'"
+            # 音量层级（volume 滤镜串联乘法）：
+            #   全局基础 0.5（-6dB，用户要求整体压低 50%）
+            #   解说段在基础之上再 -14dB（合计 -20dB）
+            #   raw_insert 段再 -6dB（合计 -26dB，避免与素材原声重叠）
+            # enable 区间外不匹配 → 自动恢复基础音量 0.5（raw_insert 结束后恢复）
+            volume_filter = f"volume={MASTER_VOLUME:.4f}"
+            volume_filter += f",volume={10**(DUCK_DB/20):.4f}:enable='{enable}'"
             raw_parts = []
             for s, e in raw_insert_regions:
                 raw_parts.append(f"between(t,{s:.3f},{e:.3f})")
@@ -134,12 +133,12 @@ def build_bgm_track(
                 volume_filter += f",volume={10**(extra_db/20):.4f}:enable='{raw_enable}'"
 
             out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm_ducked.wav")
-            _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(mixed),
+            _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
                   "-af", volume_filter, "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS),
                   "-t", str(total_duration), str(out_path)])
         else:
             out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm.wav")
-            _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(mixed),
+            _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
                   "-t", str(total_duration), "-c", "copy", str(out_path)])
 
     return out_path
