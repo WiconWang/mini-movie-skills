@@ -65,6 +65,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
 
     from . import stage_render, stage_subtitle
     from .db import PROJECT_ROOT
+    from .media import probe_duration
 
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
@@ -105,7 +106,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
         a_dur = 0.0
         if not clip.get("keep_audio"):
             wav = seg_dir / f"tts_{i:03d}.wav"
-            a_dur = (stage_render._duration(wav) if wav.exists()
+            a_dur = (probe_duration(wav) if wav.exists()
                      else stage_render.tts_say(clip["text"], wav))
         dur = max(v_dur, a_dur, 0.5)
         seg_durations.append(dur)

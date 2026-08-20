@@ -18,6 +18,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .media import probe_duration
+
 FPS = 30
 SCALE = "scale=1280:-2"   # MVP 统一 720p 输出（concat 要求各片段参数一致）
 TTS_VOICE = "Tingting"
@@ -29,14 +31,6 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"命令失败: {' '.join(cmd[:6])}...\n{r.stderr.decode()[-800:]}")
 
 
-def _duration(path: Path) -> float:
-    out = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(path)],
-        check=True, capture_output=True, text=True).stdout.strip()
-    return float(out)
-
-
 def tts_say(text: str, out_wav: Path, voice: str = TTS_VOICE) -> float:
     """本机 say 合成 → wav，返回实际时长（秒）。"""
     with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as f:
@@ -45,7 +39,7 @@ def tts_say(text: str, out_wav: Path, voice: str = TTS_VOICE) -> float:
         _run(["say", "-v", voice, "-o", str(aiff), text])
         _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(aiff),
               "-ar", "48000", "-ac", "1", str(out_wav)])
-        return _duration(out_wav)
+        return probe_duration(out_wav)
     finally:
         aiff.unlink(missing_ok=True)
 
@@ -54,7 +48,7 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
                    out_path: Path, transform: dict | None = None) -> float:
     """渲染单个片段（视频重编码 + transform + 音轨对齐到片段时长），返回片段时长。"""
     v_dur = clip["end"] - clip["start"]
-    a_dur = _duration(tts_wav) if tts_wav else 0.0
+    a_dur = probe_duration(tts_wav) if tts_wav else 0.0
     seg = max(v_dur, a_dur, 0.5)
     pad_v = max(seg - v_dur, 0.0)
 
