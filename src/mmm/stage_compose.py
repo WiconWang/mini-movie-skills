@@ -23,15 +23,15 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"composition 命令失败: {' '.join(cmd[:6])}...\n{r.stderr.decode()[-800:]}")
 
 
-def _normalize_video(video: Path, out: Path, target_w: int = 1280, target_h: int = 720,
-                     target_ar: float = 16 / 9) -> None:
-    """把片头视频统一成 1280x720、yuv420p、30fps、aac 音轨（无音频则补静音）。
+def _normalize_video(video: Path, out: Path, target_w: int = 1920, target_h: int = 1080,
+                     target_fps: int = 30) -> None:
+    """把片头视频统一成目标分辨率、yuv420p、目标 fps、aac 音轨（无音频则补静音）。
 
-    必须固定 fps=30：片头若为 60fps，concat 后容器 fps 标记被片头污染，
-    导致成片标 60fps 实际 30fps（ffprobe 实测 hd-p1_final 曾出现此问题）。
+    必须固定 fps：片头若 fps 与正片不同，concat 后容器 fps 标记被片头污染，
+    导致成片标错帧率（ffprobe 实测 hd-p1_final 曾出现 60fps 污染 30fps）。
     """
     vf = (f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
-          f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p")
+          f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={target_fps},format=yuv420p")
     if _has_audio(video):
         cmd = [
             ffmpeg_bin(), "-y", "-v", "quiet",
@@ -69,8 +69,9 @@ def _has_audio(video: Path) -> bool:
         return False
 
 
-def compose(intro_files: list[Path], body: Path, out: Path) -> None:
-    """把若干片头 + 正片按顺序拼接。所有输入会被重编码为统一参数后 concat copy。"""
+def compose(intro_files: list[Path], body: Path, out: Path,
+            out_w: int = 1920, out_h: int = 1080, out_fps: int = 30) -> None:
+    """把若干片头 + 正片按顺序拼接。所有输入统一重编码到目标规格后 concat copy。"""
     import tempfile
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -79,10 +80,10 @@ def compose(intro_files: list[Path], body: Path, out: Path) -> None:
         normalized = []
         for i, f in enumerate(intro_files):
             norm = tmpdir / f"intro_{i:03d}.mp4"
-            _normalize_video(f, norm)
+            _normalize_video(f, norm, out_w, out_h, out_fps)
             normalized.append(norm)
         body_norm = tmpdir / "body.mp4"
-        _normalize_video(body, body_norm)
+        _normalize_video(body, body_norm, out_w, out_h, out_fps)
         normalized.append(body_norm)
 
         list_file = tmpdir / "concat.txt"
@@ -114,7 +115,11 @@ def from_task(task_id: str, body_path: Path) -> Path:
         out_dir = PROJECT_ROOT / "output" / task_id
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{cfg.get('task_id', 'render')}_final.mp4"
-        compose(intro_files, body_path, out_path)
+        out_cfg = cfg.get("output") or {}
+        compose(intro_files, body_path, out_path,
+                out_w=int(out_cfg.get("width", 1920)),
+                out_h=int(out_cfg.get("height", 1080)),
+                out_fps=int(out_cfg.get("fps", 30)))
         return out_path
-    # 无片头：正片即最终成片，直接返回避免 91MB 级复制副本
+    # 无片头：正片即最终成片，直接返回避免大文件复制副本
     return body_path

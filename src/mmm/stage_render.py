@@ -20,8 +20,8 @@ from pathlib import Path
 
 from .media import ffmpeg_bin, ffprobe_bin, probe_duration
 
-FPS = 30
-SCALE = "scale=1280:-2"   # MVP 统一 720p 输出（concat 要求各片段参数一致）
+# 输出规格缺省值（无 task.json 的冒烟路径用）；任务模式从 task.json output 读取
+DEFAULT_OUT_W, DEFAULT_OUT_H, DEFAULT_OUT_FPS = 1920, 1080, 30
 TTS_VOICE = "Tingting"    # macOS say 占位音色
 EDGE_VOICE = "zh-CN-XiaoyiNeural"   # edge-tts 默认音色（女声活泼，解说调性）
 
@@ -80,13 +80,19 @@ def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
 
 
 def render_segment(video: Path, clip: dict, tts_wav: Path | None,
-                   out_path: Path, transform: dict | None = None) -> float:
+                   out_path: Path, transform: dict | None = None,
+                   out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H,
+                   fps: int = DEFAULT_OUT_FPS, letterbox: bool = False) -> float:
     """渲染单个片段（视频重编码 + transform + 音轨对齐到片段时长），返回片段时长。
 
     时长规则（声音为准，画面剪切）：
     - narration_clip：片段时长 = TTS 声音时长。画面比声音长→裁画面前段；
       画面比声音短→冻结末帧补齐。保证解说句之间声音连续、无空白等待。
     - raw_insert（保留原声）：片段时长 = 画面时长（画面与原声一体）。
+
+    out_w/out_h/fps：任务输出规格（task.json output，默认 1920x1080 30fps）。
+    letterbox：电影画幅——内容缩放至 2.35:1 居中，上下 pad 黑边，
+      字幕（底部位置不变）自然落在下黑边上，不挡画面。
     """
     v_dur = clip["end"] - clip["start"]
     a_dur = probe_duration(tts_wav) if tts_wav else 0.0
@@ -104,11 +110,19 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
     offset_y = xf.get("offset_y", 0)
     if scale != 1.0 or offset_x or offset_y:
         # 先放大，再平移；必须让 LOGO 区出画，同时保留主体
-        geo = f"scale=iw*{scale}:-2,setsar=1,crop=1280:720:(iw-1280)/2+{offset_x}:(ih-720)/2+{offset_y}"
+        geo = (f"scale=iw*{scale}:-2,setsar=1,"
+               f"crop={out_w}:{out_h}:(iw-{out_w})/2+{offset_x}:(ih-{out_h})/2+{offset_y}")
     else:
-        geo = SCALE
+        geo = f"scale={out_w}:-2"
 
-    vfilter = f"[0:v]tpad=stop_mode=clone:stop={pad_v:.2f},{geo},fps={FPS},format=yuv420p,setsar=1[v]"
+    if letterbox:
+        # 电影画幅 2.35:1：内容缩至 out_h*0.756 高，居中，上下 pad 黑边
+        lb_h = round(out_h * 0.756)
+        geo = (f"{geo},"
+               f"scale={out_w}:{lb_h}:force_original_aspect_ratio=decrease,"
+               f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+
+    vfilter = f"[0:v]tpad=stop_mode=clone:stop={pad_v:.2f},{geo},fps={fps},format=yuv420p,setsar=1[v]"
     if clip.get("keep_audio"):
         # raw_insert：保留原声
         afilter = f"[0:a]apad=whole_dur={seg:.2f},aresample=48000[a]"
@@ -226,9 +240,10 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
 
-    # 任务级 transform / TTS 配置（系列继承）；edl 或 clip 可覆盖
+    # 任务级 transform / TTS / 输出规格（系列继承）；edl 或 clip 可覆盖
     transform = edl.get("transform") or {}
     tts_cfg: dict = {}
+    out_w, out_h, out_fps = DEFAULT_OUT_W, DEFAULT_OUT_H, DEFAULT_OUT_FPS
     if task_id:
         from .db import PROJECT_ROOT
 
@@ -237,6 +252,10 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             cfg = json.loads(cfg_path.read_text())
             transform = cfg.get("transform") or transform
             tts_cfg = cfg.get("tts") or {}
+            out_cfg = cfg.get("output") or {}
+            out_w = int(out_cfg.get("width", DEFAULT_OUT_W))
+            out_h = int(out_cfg.get("height", DEFAULT_OUT_H))
+            out_fps = int(out_cfg.get("fps", DEFAULT_OUT_FPS))
 
     out_path = out_path or work_dir / "render.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +275,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             if not wav.exists():
                 synthesize(clip["text"], wav, tts_cfg)
         seg_path = seg_dir / f"seg_{i:03d}.mp4"
-        seg_dur = render_segment(video, clip, wav, seg_path, transform)
+        seg_dur = render_segment(video, clip, wav, seg_path, transform,
+                                 out_w=out_w, out_h=out_h, fps=out_fps,
+                                 letterbox=(subtitle_mode == "letterbox"))
         seg_durations.append(seg_dur)
         total += seg_dur
         seg_files.append(seg_path)
@@ -285,8 +306,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         raw_path.unlink(missing_ok=True)
         raw_path = mixed_path
 
-    # 字幕烧录/封装（overlay 模式：硬字幕。优先 ASS（需 libass），否则 drawtext 硬字幕）
-    if subtitle_mode == "overlay":
+    # 字幕烧录/封装（overlay/letterbox 硬字幕：优先 ASS（需 libass），否则 drawtext）
+    # letterbox 的画面已在 render_segment 加上下黑边，字幕底部位置不变即落在下黑边上
+    if subtitle_mode in ("overlay", "letterbox"):
         from . import stage_subtitle
 
         narration = json.loads((work_dir / "narration.json").read_text())["narration"]
@@ -305,8 +327,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             raw_path.unlink(missing_ok=True)
             if out_path is None:
                 out_path = tmp_out
-    elif subtitle_mode == "letterbox":
-        raise NotImplementedError("letterbox 字幕模式尚未实现")
+    # letterbox 已并入 overlay 分支（画面含黑边，字幕落黑边）
     else:
         # 无字幕模式：raw 直接就是成片
         if raw_path != out_path:
