@@ -14,6 +14,10 @@ from pathlib import Path
 from .llm import chat
 
 NARRATE_MODEL = "deepseek-v4-flash"
+# deepseek-v4-flash 是思考型模型：reasoning 与正文共享 max_tokens 预算。
+# 全量索引（2万+ token 输入）下推理可烧掉 8k+，预算不足会 finish_reason=length 且正文为空。
+# 实测推理 20102 字符 + 正文约 3k token，给 32768 留足余量。
+NARRATE_MAX_TOKENS = 32768
 # 中文口语约 250~300 字/分钟，取中值用于字数预算
 CHARS_PER_MINUTE = 275
 
@@ -131,7 +135,12 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0) 
     timeline["_source"] = str(timeline_path)
 
     prompt = _build_prompt(timeline, target_minutes)
-    raw = chat(NARRATE_MODEL, [{"role": "user", "content": prompt}], max_tokens=8192, temperature=0.6)
+    raw = chat(NARRATE_MODEL, [{"role": "user", "content": prompt}],
+               max_tokens=NARRATE_MAX_TOKENS, temperature=0.6)
+    if not raw.strip():
+        raise RuntimeError(
+            f"{NARRATE_MODEL} 返回空内容（思考型模型推理耗尽 max_tokens 的典型症状，"
+            f"当前预算 {NARRATE_MAX_TOKENS}）")
     data = _extract_json(raw)
     narration = data.get("narration", [])
 
