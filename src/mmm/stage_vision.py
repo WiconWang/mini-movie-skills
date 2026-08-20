@@ -102,7 +102,8 @@ def run(video: Path, work_dir: Path, model: str = VISION_MODEL) -> dict:
     metas = []
     errors = []
     reused = 0
-    for shot in shots:
+    total = len(shots)
+    for idx, shot in enumerate(shots, 1):
         per_shot_path = metas_dir / f"shot_{shot['id']:03d}.json"
         if per_shot_path.exists():
             meta = json.loads(per_shot_path.read_text(encoding="utf-8"))
@@ -116,6 +117,10 @@ def run(video: Path, work_dir: Path, model: str = VISION_MODEL) -> dict:
         metas.append(meta)
         if "_error" in meta:
             errors.append(shot["id"])
+            print(f"  [{idx}/{total}] shot {shot['id']} ✗ {meta['_error']}", flush=True)
+        elif idx % 10 == 0 or idx == total:
+            # 进度输出（供 tail -f 观察；每 10 镜头一条）
+            print(f"  [{idx}/{total}] shot {shot['id']} ✓", flush=True)
         # llm.chat 内部已有限速，这里不再额外 sleep
 
     out = {"model": model, "shots": shots, "metas": metas}
