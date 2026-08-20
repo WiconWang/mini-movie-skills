@@ -14,6 +14,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from .media import ffmpeg_bin, ffprobe_bin
+
 
 def _run(cmd: list[str]) -> None:
     r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -27,7 +29,7 @@ def _normalize_video(video: Path, out: Path, target_w: int = 1280, target_h: int
     vf = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
     if _has_audio(video):
         cmd = [
-            "ffmpeg", "-y", "-v", "quiet",
+            ffmpeg_bin(), "-y", "-v", "quiet",
             "-i", str(video),
             "-vf", vf,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -36,7 +38,7 @@ def _normalize_video(video: Path, out: Path, target_w: int = 1280, target_h: int
         ]
     else:
         cmd = [
-            "ffmpeg", "-y", "-v", "quiet",
+            ffmpeg_bin(), "-y", "-v", "quiet",
             "-i", str(video),
             "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
             "-vf", vf,
@@ -54,7 +56,7 @@ def _has_audio(video: Path) -> bool:
     """检测视频是否含音轨。"""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-select_streams", "a",
+            [ffprobe_bin(), "-v", "quiet", "-select_streams", "a",
              "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(video)],
             check=True, capture_output=True, text=True)
         return "audio" in r.stdout
@@ -80,7 +82,7 @@ def compose(intro_files: list[Path], body: Path, out: Path) -> None:
 
         list_file = tmpdir / "concat.txt"
         list_file.write_text("".join(f"file '{p}'\n" for p in normalized))
-        _run(["ffmpeg", "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
+        _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
               "-i", str(list_file), "-c", "copy", str(out)])
 
 

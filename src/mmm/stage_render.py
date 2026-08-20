@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .media import probe_duration
+from .media import ffmpeg_bin, ffprobe_bin, probe_duration
 
 FPS = 30
 SCALE = "scale=1280:-2"   # MVP 统一 720p 输出（concat 要求各片段参数一致）
@@ -38,7 +38,7 @@ def tts_say(text: str, out_wav: Path, voice: str = TTS_VOICE) -> float:
         aiff = Path(f.name)
     try:
         _run(["say", "-v", voice, "-o", str(aiff), text])
-        _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(aiff),
+        _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(aiff),
               "-ar", "48000", "-ac", "1", str(out_wav)])
         return probe_duration(out_wav)
     finally:
@@ -55,7 +55,7 @@ def tts_edge(text: str, out_wav: Path, voice: str = EDGE_VOICE, rate: str = "+0%
         mp3 = Path(f.name)
     try:
         asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(str(mp3)))
-        _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(mp3),
+        _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mp3),
               "-ar", "48000", "-ac", "1", str(out_wav)])
         return probe_duration(out_wav)
     finally:
@@ -117,7 +117,7 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
         afilter = f"[1:a]apad=whole_dur={seg:.2f},aresample=48000[a]"
         amap_input = 1
 
-    cmd = ["ffmpeg", "-y", "-v", "quiet",
+    cmd = [ffmpeg_bin(), "-y", "-v", "quiet",
            "-ss", f"{clip['start']:.3f}", "-t", f"{seg:.3f}", "-i", str(video)]
     if amap_input == 1:
         cmd += ["-i", str(tts_wav)]
@@ -133,7 +133,7 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
 def _mix_with_bgm(video: Path, bgm: Path, out: Path) -> None:
     """把视频轨与 BGM 轨混音（BGM 已 ducking 处理，直接 amix 即可）。"""
     _run([
-        "ffmpeg", "-y", "-v", "quiet",
+        ffmpeg_bin(), "-y", "-v", "quiet",
         "-i", str(video), "-i", str(bgm),
         "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2[a]",
         "-map", "0:v", "-map", "[a]",
@@ -166,7 +166,7 @@ def _bgm_duck_regions(clips: list[dict],
 def _has_ass_filter() -> bool:
     """检测本机 ffmpeg 是否支持 ass/subtitles 滤镜。"""
     try:
-        r = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+        r = subprocess.run([ffmpeg_bin(), "-hide_banner", "-filters"],
                            capture_output=True, text=True, check=True)
         lines = r.stdout.splitlines()
         # 精确匹配滤镜名（行首格式如 "... ass" 或 " TSC ass"）
@@ -180,7 +180,7 @@ def _has_ass_filter() -> bool:
 def _mux_srt(video: Path, srt: Path, out: Path) -> None:
     """把 SRT 作为软字幕轨封装进 MP4。"""
     _run([
-        "ffmpeg", "-y", "-v", "quiet",
+        ffmpeg_bin(), "-y", "-v", "quiet",
         "-i", str(video),
         "-i", str(srt),
         "-c", "copy", "-c:s", "mov_text",
@@ -194,7 +194,7 @@ def _burn_subtitles(video: Path, ass: Path, out: Path) -> None:
     # ffmpeg ass 滤镜要求路径中的特殊字符（逗号、冒号）用反斜杠转义
     escaped = str(ass).replace("\\", "/").replace(":", "\\:").replace(",", "\\,")
     _run([
-        "ffmpeg", "-y", "-v", "quiet",
+        ffmpeg_bin(), "-y", "-v", "quiet",
         "-i", str(video),
         "-vf", f"ass={escaped}",
         "-c:a", "copy",
@@ -206,7 +206,7 @@ def _burn_subtitles(video: Path, ass: Path, out: Path) -> None:
 def _burn_drawtext(video: Path, dt_filter: str, out: Path) -> None:
     """把 drawtext 滤镜链烧录进视频（硬字幕，无 libass 时的替代方案）。"""
     _run([
-        "ffmpeg", "-y", "-v", "quiet",
+        ffmpeg_bin(), "-y", "-v", "quiet",
         "-i", str(video),
         "-vf", dt_filter,
         "-c:a", "copy",
@@ -265,7 +265,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     list_file = seg_dir / "concat.txt"
     list_file.write_text("".join(f"file '{p.resolve()}'\n" for p in seg_files))
     raw_path = out_path.with_suffix(".raw" + out_path.suffix) if out_path else work_dir / "render.raw.mp4"
-    _run(["ffmpeg", "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
+    _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
           "-i", str(list_file), "-c", "copy", str(raw_path)])
 
     # 若有 BGM 配置，生成与成片等长的 BGM 轨并混音
