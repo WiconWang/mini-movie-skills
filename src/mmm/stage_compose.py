@@ -25,8 +25,13 @@ def _run(cmd: list[str]) -> None:
 
 def _normalize_video(video: Path, out: Path, target_w: int = 1280, target_h: int = 720,
                      target_ar: float = 16 / 9) -> None:
-    """把片头视频统一成 1280x720、yuv420p、aac 音轨（无音频则补静音）。"""
-    vf = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+    """把片头视频统一成 1280x720、yuv420p、30fps、aac 音轨（无音频则补静音）。
+
+    必须固定 fps=30：片头若为 60fps，concat 后容器 fps 标记被片头污染，
+    导致成片标 60fps 实际 30fps（ffprobe 实测 hd-p1_final 曾出现此问题）。
+    """
+    vf = (f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+          f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p")
     if _has_audio(video):
         cmd = [
             ffmpeg_bin(), "-y", "-v", "quiet",
