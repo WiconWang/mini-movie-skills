@@ -33,9 +33,13 @@ bgm_playlist:
   - "temp/陈致逸,HOYO-MiX - 希望的明日 Another Hopeful Tomorrow.mp3"
   - "temp/HOYO-MiX - 熛烬的悼咏 Elogia Cinerosa.mp3"
 
-# TTS 音色（系列固定，任务可覆盖；云 TTS 选型后填具体音色 ID）
+# TTS 引擎配置（任务可覆盖 task.json 的 tts 字段）
+# engine: say = macOS 本地占位（零依赖，机器音）
+#         edge = edge-tts 在线免费（验证级音质，需联网，无 key）
+# 云 TTS（火山/豆包）选型后在 stage_render.synthesize 加分支，调用方零改动
 tts:
-  voice: ""        # 占位：当前为 macOS say Tingting
+  engine: edge
+  voice: zh-CN-XiaoyiNeural   # 女声活泼，解说调性；备选 zh-CN-XiaoxiaoNeural / YunxiNeural
   speed: 1.1
 
 # 目标正片时长（分钟，不含 raw_insert）

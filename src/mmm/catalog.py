@@ -95,6 +95,7 @@ def create_task(task_id: str, video_ids: list[str], series: str = "") -> dict:
         "transform": cfg.get("transform"),
         "subtitle_mode": cfg.get("subtitle_mode", "overlay"),
         "bgm_playlist": cfg.get("bgm_playlist", []),
+        "tts": cfg.get("tts") or {},
     }
     task_dir = PROJECT_ROOT / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)

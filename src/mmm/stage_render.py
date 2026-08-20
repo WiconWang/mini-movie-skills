@@ -22,7 +22,8 @@ from .media import probe_duration
 
 FPS = 30
 SCALE = "scale=1280:-2"   # MVP 统一 720p 输出（concat 要求各片段参数一致）
-TTS_VOICE = "Tingting"
+TTS_VOICE = "Tingting"    # macOS say 占位音色
+EDGE_VOICE = "zh-CN-XiaoyiNeural"   # edge-tts 默认音色（女声活泼，解说调性）
 
 
 def _run(cmd: list[str]) -> None:
@@ -42,6 +43,40 @@ def tts_say(text: str, out_wav: Path, voice: str = TTS_VOICE) -> float:
         return probe_duration(out_wav)
     finally:
         aiff.unlink(missing_ok=True)
+
+
+def tts_edge(text: str, out_wav: Path, voice: str = EDGE_VOICE, rate: str = "+0%") -> float:
+    """edge-tts 合成 → wav（微软 Edge 朗读接口，免费无 key，需联网；仅验证用）。"""
+    import asyncio
+
+    import edge_tts
+
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        mp3 = Path(f.name)
+    try:
+        asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(str(mp3)))
+        _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(mp3),
+              "-ar", "48000", "-ac", "1", str(out_wav)])
+        return probe_duration(out_wav)
+    finally:
+        mp3.unlink(missing_ok=True)
+
+
+def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
+    """TTS 统一入口（接口隔离点）：(text, out_wav) -> duration。
+
+    按系列/任务配置的 tts.engine 分发：
+    - say  ：macOS 本地占位（零依赖，机器音）
+    - edge ：edge-tts 在线免费（验证级音质，需联网）
+    云 TTS（火山/豆包）选型后在此加分支，调用方零改动。
+    """
+    cfg = tts_cfg or {}
+    engine = cfg.get("engine", "say")
+    if engine == "edge":
+        speed = float(cfg.get("speed", 1.0))
+        rate = f"{(speed - 1) * 100:+.0f}%"
+        return tts_edge(text, out_wav, voice=cfg.get("voice") or EDGE_VOICE, rate=rate)
+    return tts_say(text, out_wav)
 
 
 def render_segment(video: Path, clip: dict, tts_wav: Path | None,
@@ -170,8 +205,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
 
-    # 任务级 transform（系列配置）；edl 或 clip 可覆盖
+    # 任务级 transform / TTS 配置（系列继承）；edl 或 clip 可覆盖
     transform = edl.get("transform") or {}
+    tts_cfg: dict = {}
     if task_id:
         from .db import PROJECT_ROOT
 
@@ -179,6 +215,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
             transform = cfg.get("transform") or transform
+            tts_cfg = cfg.get("tts") or {}
 
     out_path = out_path or work_dir / "render.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,7 +232,8 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         wav = None
         if not clip.get("keep_audio"):
             wav = seg_dir / f"tts_{i:03d}.wav"
-            tts_say(clip["text"], wav)
+            if not wav.exists():
+                synthesize(clip["text"], wav, tts_cfg)
         seg_path = seg_dir / f"seg_{i:03d}.mp4"
         seg_dur = render_segment(video, clip, wav, seg_path, transform)
         seg_durations.append(seg_dur)

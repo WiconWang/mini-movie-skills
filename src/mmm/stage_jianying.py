@@ -70,13 +70,15 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
 
-    # transform 继承链与导出器A 相同：task.json（系列继承）> edl 级 > per-clip 覆盖
+    # transform / TTS 继承链与导出器A 相同：task.json（系列继承）> edl 级 > per-clip 覆盖
     transform = edl.get("transform") or {}
+    tts_cfg: dict = {}
     if task_id:
         cfg_path = PROJECT_ROOT / "tasks" / task_id / "task.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
             transform = cfg.get("transform") or transform
+            tts_cfg = cfg.get("tts") or {}
 
     drafts_dir = drafts_dir or detect_drafts_dir()
     if drafts_dir is None:
@@ -107,7 +109,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
         if not clip.get("keep_audio"):
             wav = seg_dir / f"tts_{i:03d}.wav"
             a_dur = (probe_duration(wav) if wav.exists()
-                     else stage_render.tts_say(clip["text"], wav))
+                     else stage_render.synthesize(clip["text"], wav, tts_cfg))
         dur = max(v_dur, a_dur, 0.5)
         seg_durations.append(dur)
 
