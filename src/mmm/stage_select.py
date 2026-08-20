@@ -138,8 +138,10 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
             # 兜底：直接用台词区间
             selected = [{"shot_id": None, "start": t0, "end": t1}]
 
-        clip_start = selected[0]["start"]
-        clip_end = selected[-1]["end"]
+        # 区间边界取所有选中镜头的 min/max：selected 按优先级收集（非时间序），
+        # 直接取首尾会把时间倒序的镜头拼出负区间（start>end），ffmpeg 渲染直接崩
+        clip_start = min(s["start"] for s in selected)
+        clip_end = max(s["end"] for s in selected)
         shot_ids = [s["shot_id"] for s in selected if s["shot_id"] is not None]
 
         # 解析本片段的源视频与本地时间区间（相对时间轴：EDL 不记全局秒数）
