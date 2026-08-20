@@ -81,10 +81,19 @@ def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
 
 def render_segment(video: Path, clip: dict, tts_wav: Path | None,
                    out_path: Path, transform: dict | None = None) -> float:
-    """渲染单个片段（视频重编码 + transform + 音轨对齐到片段时长），返回片段时长。"""
+    """渲染单个片段（视频重编码 + transform + 音轨对齐到片段时长），返回片段时长。
+
+    时长规则（声音为准，画面剪切）：
+    - narration_clip：片段时长 = TTS 声音时长。画面比声音长→裁画面前段；
+      画面比声音短→冻结末帧补齐。保证解说句之间声音连续、无空白等待。
+    - raw_insert（保留原声）：片段时长 = 画面时长（画面与原声一体）。
+    """
     v_dur = clip["end"] - clip["start"]
     a_dur = probe_duration(tts_wav) if tts_wav else 0.0
-    seg = max(v_dur, a_dur, 0.5)
+    if clip.get("keep_audio"):
+        seg = max(v_dur, 0.5)
+    else:
+        seg = max(a_dur, 0.5)
     pad_v = max(seg - v_dur, 0.0)
 
     # transform 链：放大 + 位移，系列级可被 per-clip 覆盖
@@ -109,7 +118,7 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
         amap_input = 1
 
     cmd = ["ffmpeg", "-y", "-v", "quiet",
-           "-ss", f"{clip['start']:.3f}", "-t", f"{v_dur:.3f}", "-i", str(video)]
+           "-ss", f"{clip['start']:.3f}", "-t", f"{seg:.3f}", "-i", str(video)]
     if amap_input == 1:
         cmd += ["-i", str(tts_wav)]
     cmd += ["-filter_complex", vfilter + ";" + afilter,

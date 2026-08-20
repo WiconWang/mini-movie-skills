@@ -103,14 +103,11 @@ def from_task(task_id: str, body_path: Path) -> Path:
             else:
                 raise FileNotFoundError(f"片头素材不存在: {p}")
 
-    out_dir = PROJECT_ROOT / "output" / task_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{cfg.get('task_id', 'render')}_final.mp4"
-
     if intro_files:
+        out_dir = PROJECT_ROOT / "output" / task_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{cfg.get('task_id', 'render')}_final.mp4"
         compose(intro_files, body_path, out_path)
-    else:
-        # 无片头：正片即最终成片
-        _run(["ffmpeg", "-y", "-v", "quiet", "-i", str(body_path),
-              "-c", "copy", str(out_path)])
-    return out_path
+        return out_path
+    # 无片头：正片即最终成片，直接返回避免 91MB 级复制副本
+    return body_path
