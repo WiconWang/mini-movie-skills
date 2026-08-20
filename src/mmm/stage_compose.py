@@ -114,7 +114,8 @@ def from_task(task_id: str, body_path: Path) -> Path:
     if intro_files:
         out_dir = PROJECT_ROOT / "output" / task_id
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{cfg.get('task_id', 'render')}_final.mp4"
+        # final 名继承正片 stem（含时间戳），避免历史版本互相覆盖
+        out_path = out_dir / f"{body_path.stem}_final{body_path.suffix}"
         out_cfg = cfg.get("output") or {}
         compose(intro_files, body_path, out_path,
                 out_w=int(out_cfg.get("width", 1920)),

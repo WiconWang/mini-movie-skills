@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import time
 from pathlib import Path
 
 import typer
@@ -370,8 +372,11 @@ def run_render(
         out_name = _render_title(cfg)
         out_dir = db.PROJECT_ROOT / "output" / task
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{out_name}.mp4"
-        if _skip_if_done(task, "render", out_path, force=force):
+        # 每次渲染输出带时间戳（历史不覆盖，用户可反悔）；latest 固定名指向最新
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"{out_name}_{stamp}.mp4"
+        latest_path = out_dir / f"{out_name}_latest.mp4"
+        if _skip_if_done(task, "render", latest_path, force=force):
             return
         work_dir = task_dir
         # BGM：CLI --bgm 优先，否则用 task.json bgm_playlist
@@ -413,6 +418,9 @@ def run_render(
     if task:
         typer.echo(f"  已登记 footage_usage: {summary['footage_registered']} 个镜头"
                    f"（edl.final.json 已归档）")
+        # 最新版固定名（副本），历史时间戳版本保留不覆盖
+        shutil.copy2(Path(summary["output"]), latest_path)
+        typer.echo(f"  最新版: {latest_path}")
         db.record_job(task, "render", "done", summary["output"])
 
 
