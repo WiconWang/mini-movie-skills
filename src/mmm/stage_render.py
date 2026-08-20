@@ -105,6 +105,10 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
     # transform 链：放大 + 位移，系列级可被 per-clip 覆盖
     xf = dict(transform or {})
     xf.update(clip.get("transform") or {})
+    if letterbox and not clip.get("transform"):
+        # 黑边模式默认不做缩放：黑边已营造电影画幅，放大裁切会破坏画面；
+        # 仅当 per-clip 显式指定 transform 时才应用
+        xf = {}
     scale = xf.get("scale", 1.0)
     offset_x = xf.get("offset_x", 0)
     offset_y = xf.get("offset_y", 0)
