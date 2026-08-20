@@ -203,6 +203,18 @@ def _burn_subtitles(video: Path, ass: Path, out: Path) -> None:
     ])
 
 
+def _burn_drawtext(video: Path, dt_filter: str, out: Path) -> None:
+    """把 drawtext 滤镜链烧录进视频（硬字幕，无 libass 时的替代方案）。"""
+    _run([
+        "ffmpeg", "-y", "-v", "quiet",
+        "-i", str(video),
+        "-vf", dt_filter,
+        "-c:a", "copy",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        str(out),
+    ])
+
+
 def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         task_id: str = "", bgm_playlist: list[str] | None = None,
         subtitle_mode: str = "overlay") -> dict:
@@ -273,20 +285,23 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         raw_path.unlink(missing_ok=True)
         raw_path = mixed_path
 
-    # 字幕烧录/封装（overlay 模式：优先硬字幕，ffmpeg 不支持则回退软字幕 SRT）
+    # 字幕烧录/封装（overlay 模式：硬字幕。优先 ASS（需 libass），否则 drawtext 硬字幕）
     if subtitle_mode == "overlay":
         from . import stage_subtitle
 
-        subs = stage_subtitle.run(work_dir, mode="overlay", seg_durations=seg_durations)
+        narration = json.loads((work_dir / "narration.json").read_text())["narration"]
         if _has_ass_filter():
+            subs = stage_subtitle.run(work_dir, mode="overlay", seg_durations=seg_durations)
             tmp_out = out_path or work_dir / "render_sub.mp4"
             _burn_subtitles(raw_path, Path(subs["ass"]), tmp_out)
             raw_path.unlink(missing_ok=True)
             if out_path is None:
                 out_path = tmp_out
         else:
+            # 无 libass：drawtext 硬字幕（整片重编码烧录，中文用 macOS 内置字体）
+            dt = stage_subtitle.build_drawtext(narration, clips, seg_durations)
             tmp_out = out_path or work_dir / "render_sub.mp4"
-            _mux_srt(raw_path, Path(subs["srt"]), tmp_out)
+            _burn_drawtext(raw_path, dt, tmp_out)
             raw_path.unlink(missing_ok=True)
             if out_path is None:
                 out_path = tmp_out

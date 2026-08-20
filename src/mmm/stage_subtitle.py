@@ -173,6 +173,49 @@ def _to_srt_time(sec: float) -> str:
     return f"{h:02d}:{m:02d}:{int(s):02d},{ms:03d}"
 
 
+DRAWTEXT_FONTFILE = "/System/Library/Fonts/PingFang.ttc"   # macOS 内置中文字体
+
+
+def _escape_drawtext(text: str) -> str:
+    """转义 drawtext text 值中的特殊字符（ffmpeg 滤镜语法）。"""
+    return (text.replace("\\", "\\\\").replace("'", "\\'")
+                .replace(":", "\\:").replace(",", "\\,").replace("%", "%"))
+
+
+def build_drawtext(narration: list[dict], clips: list[dict],
+                   seg_durations: list[float] | None = None,
+                   fontfile: str = DRAWTEXT_FONTFILE) -> str:
+    """生成 drawtext 滤镜链（硬字幕，无 libass 时的替代方案）。
+
+    每句字幕一个 drawtext，enable 控制显示时间段（成片时间轴）。
+    返回滤镜片段（不含 [v] 前缀），调用方拼接到画面滤镜链后。
+    """
+    spans = _output_spans(clips, seg_durations)
+    filters = []
+    for n in narration:
+        span = spans.get(n["id"])
+        if not span:
+            continue
+        t0, t1 = span
+        lines = _split_lines(n["text"])
+        if not lines:
+            continue
+        # 与 ASS 同规则：每行按字数分配时长，受 [1.0, 6.0]s 约束，逐行顺序显示
+        total_dur = t1 - t0
+        per_line = max(LINE_DURATION_MIN, min(total_dur / len(lines), LINE_DURATION_MAX))
+        for i, line in enumerate(lines):
+            s = t0 + i * per_line
+            e = min(t0 + (i + 1) * per_line, t1)
+            if e <= s:
+                continue
+            filters.append(
+                f"drawtext=fontfile={fontfile}:text='{_escape_drawtext(line)}'"
+                f":fontsize=42:fontcolor=white:borderw=3:bordercolor=black"
+                f":x=(w-text_w)/2:y=h-100:enable='between(t,{s:.2f},{e:.2f})'"
+            )
+    return ",".join(filters)
+
+
 def run(work_dir: Path, mode: str = "overlay",
         seg_durations: list[float] | None = None) -> dict:
     """从 narration.json + edl.json 生成字幕文件（ASS + SRT fallback）。

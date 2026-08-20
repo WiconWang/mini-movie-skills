@@ -20,9 +20,10 @@ title_template: "原神{version}-{chapter}"
 #   - {type: intro_special, src: assets/intros/gs-1.6.mp4}
 composition: []
 
-# 画面变换（裁 LOGO）：放大 10%、上移 60px，UID 水印区出画
-# 冒烟样本验证值；不同录制源 LOGO 位置不同可 per-clip 覆盖
-transform: {scale: 1.10, offset_x: 0, offset_y: -60}
+# 画面变换（裁 LOGO/UID）：放大 110%，顶部对齐（水平居中、垂直贴顶），
+# 右下角 UID 水印区整行出画。offset_y=-36 使 crop 起点贴顶（(ih-720)/2-36=0）。
+# 不同录制源 LOGO 位置不同可 per-clip 覆盖
+transform: {scale: 1.10, offset_x: 0, offset_y: -36}
 
 # 字幕模式：overlay（白边描边压画面）/ letterbox（黑边电影画幅，未实现）
 subtitle_mode: overlay

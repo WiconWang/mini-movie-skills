@@ -30,6 +30,18 @@ def _estimate_duration(text: str, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) 
     return max(len(text) / chars_per_sec, 1.0) + 0.3
 
 
+# 操作界面类镜头的描述关键词：游戏设置/时间调整/菜单等纯 UI 画面，不适合作解说配图
+_UI_ONLY_KEYWORDS = ("界面", "调整", "菜单", "设置", "地图", "背包", "商城", "结算")
+
+
+def _is_ui_only(shot: dict) -> bool:
+    """判断镜头是否为纯操作界面（has_ui 且描述含 UI 类关键词）。"""
+    desc = (shot.get("description") or "").lower()
+    if not shot.get("has_ui") or not desc:
+        return False
+    return any(k in desc for k in _UI_ONLY_KEYWORDS)
+
+
 def _collect_candidates(shots: list[dict], t0: float, t1: float,
                         used: set[tuple[str, int]] | None = None,
                         default_video_id: str = "") -> tuple[list[dict], bool]:
@@ -38,6 +50,8 @@ def _collect_candidates(shots: list[dict], t0: float, t1: float,
     返回 (候选列表, 是否兜底)。兜底 = 排除占用后候选耗尽，放回全部候选并标记人工复核。
     """
     cands = [s for s in shots if _overlaps(s["start"], s["end"], t0, t1)]
+    # 排除纯操作界面镜头（时间调整/菜单等，视觉上打断叙事）
+    cands = [s for s in cands if not _is_ui_only(s)]
     exhausted = False
     if used:
         fresh = [s for s in cands
