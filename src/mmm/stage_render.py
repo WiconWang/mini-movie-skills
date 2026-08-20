@@ -120,10 +120,10 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
         geo = f"scale={out_w}:-2"
 
     if letterbox:
-        # 电影画幅 2.35:1：内容缩至 out_h*0.756 高，居中，上下 pad 黑边
+        # 电影画幅 2.35:1：画面满宽，上下 crop 出电影比例（左右无黑边），再 pad 上下黑边
         lb_h = round(out_h * 0.756)
         geo = (f"{geo},"
-               f"scale={out_w}:{lb_h}:force_original_aspect_ratio=decrease,"
+               f"crop={out_w}:{lb_h}:(iw-{out_w})/2:(ih-{lb_h})/2,"
                f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2,setsar=1")
 
     vfilter = f"[0:v]tpad=stop_mode=clone:stop={pad_v:.2f},{geo},fps={fps},format=yuv420p,setsar=1[v]"
