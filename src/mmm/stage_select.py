@@ -178,11 +178,18 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
     def ws_of(vid: str) -> Path:
         return workspace_of(vid)
 
-    lines_by_id = {l["id"]: l for l in timeline.get("lines", [])}
+    lines = timeline.get("lines", [])
+    lines_by_key = {(l.get("video_id"), l["id"]): l for l in lines}
     shots = timeline.get("shots", [])
     keep_reqs = keep_requirements or []
     clips = []
     usage = []
+
+    def _resolve_line(rid):
+        """related_line_ids 解析：支持 {video_id,line_id}（多视频融合）与纯 id（单视频 oneshot）。"""
+        if isinstance(rid, dict):
+            return lines_by_key.get((rid.get("video_id"), rid.get("line_id")))
+        return next((x for x in lines if x["id"] == rid), None)
 
     # 保留区间登记占用镜头（避免解说选片重复使用）
     for req in keep_reqs:
@@ -195,8 +202,8 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
                 usage.append({"video_id": req["video_id"], "shot_id": s["id"]})
 
     for n in narration:
-        related = [lines_by_id[rid] for rid in n.get("related_line_ids", [])
-                   if rid in lines_by_id]
+        related = [l for l in (_resolve_line(rid) for rid in n.get("related_line_ids", []))
+                   if l is not None]
         timed = [l for l in related if l.get("start") is not None]
         if not timed:
             # 没有可用时间戳的句跳过（理论上不应发生）

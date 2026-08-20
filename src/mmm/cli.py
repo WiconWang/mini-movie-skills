@@ -278,6 +278,7 @@ def run_narrate(
     task_id: str = typer.Argument(""),
     timeline: str = typer.Option("", "--timeline", help="直接给 timeline.json 路径（冒烟测试用，跳过 task_id）"),
     target_minutes: float = typer.Option(15.0, "--target-minutes", "-t", help="目标正片时长（分钟）"),
+    mode: str = typer.Option("auto", "--mode", help="auto/segment/oneshot（多视频合一篇用 segment）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。"""
@@ -305,7 +306,8 @@ def run_narrate(
         typer.echo(f"✗ timeline 不存在: {timeline_path}", err=True)
         raise typer.Exit(1)
 
-    summary = stage_narrate.run(timeline_path, out_dir, target_minutes=target_minutes)
+    summary = stage_narrate.run(timeline_path, out_dir, target_minutes=target_minutes,
+                                mode=mode)
     typer.echo(f"✓ 解说稿生成完成: {summary['sentences']} 句")
     typer.echo(f"  产物: {out_dir}/narration.json, narration.md")
     if task_id:
