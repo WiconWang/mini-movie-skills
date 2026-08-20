@@ -28,6 +28,24 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 - 一切定位用 `(video_id, 源内时间)`，禁止成片绝对时间（相对时间轴铁律）
 - 台账操作走 `pipeline.sqlite`（结构见 `db/schema.sql`）
 
+## 剪辑前配置确认（铁律：必须逐项询问）
+
+**任务创建后、开始剪辑前，Agent 必须逐项询问用户确认以下配置**（用户不直接改配置文件，全部通过自然语言答复）。用户不提供某项时用系列默认值：
+
+| 配置项 | 含义 | 系列默认（原神） |
+|--------|------|-----------------|
+| 输出分辨率 / FPS | 成片规格，所有素材适配 | 1920×1080 / 30fps |
+| 黑边（letterbox） | 上下加黑边电影画幅，还是满屏 | overlay（满屏硬字幕） |
+| 缩放（transform） | 是否放大裁 LOGO/UID，scale/offset | scale 1.10 / 顶部对齐 |
+| 字幕模式 | overlay 硬字幕 / letterbox / none | overlay |
+| BGM 歌单 | 背景音乐列表 | 空（须指定） |
+| 片头（composition） | 是否拼片头 | 空（须指定） |
+| TTS 音色 | 解说声音 + 语速 | edge / zh-CN-XiaoyiNeural / 1.1 |
+| 目标时长 | 正片分钟数（不含 raw_insert） | 15 |
+| 保留区间 | raw_insert 原声段（见下节） | 空 |
+
+**执行方式**：Agent 逐项列出默认值 + 询问"是否调整"，用户可用自然语言一次答多项（如"1080p，加黑边，BGM 用这两首，第300秒要原声"）。所有答复写入 task.json，确认完毕后开始流水线。
+
 ## 保留区间配置（raw_insert）
 
 用户可用自然语言指定「原始素材哪些位置要保留原声/保留画面」，写入 `tasks/{task_id}/task.json` 的 `keep_requirements` 数组，select 阶段自动生成 raw_insert 片段（原声原画）并入 EDL。

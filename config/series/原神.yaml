@@ -45,3 +45,10 @@ tts:
 
 # 目标正片时长（分钟，不含 raw_insert）
 target_minutes: 15
+
+# 输出规格（剪辑开始前 Skill 询问确认，用户不提供时用此默认）
+# 所有源素材等比缩放适配此分辨率（必要时居中 pad 黑边）
+output:
+  width: 1920
+  height: 1080
+  fps: 30
