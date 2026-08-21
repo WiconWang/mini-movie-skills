@@ -30,16 +30,8 @@ def _estimate_duration(text: str, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) 
     return max(len(text) / chars_per_sec, 1.0) + 0.3
 
 
-# 操作界面类镜头的描述关键词：游戏设置/时间调整/菜单等纯 UI 画面，不适合作解说配图
-_UI_ONLY_KEYWORDS = ("界面", "调整", "菜单", "设置", "地图", "背包", "商城", "结算")
-
-
-def _is_ui_only(shot: dict) -> bool:
-    """判断镜头是否为纯操作界面（has_ui 且描述含 UI 类关键词）。"""
-    desc = (shot.get("description") or "").lower()
-    if not shot.get("has_ui") or not desc:
-        return False
-    return any(k in desc for k in _UI_ONLY_KEYWORDS)
+# v1.0.4：操作界面镜头改用 vision 的 ui_type=gameplay 准入否决（替代旧 _is_ui_only 关键词匹配，
+# 关键词匹配有漏检；详见 docs/2026/0821-v1.0.4-画面UI分类与选片准入方案.md）
 
 
 def _avoid_keep_intervals(start: float, end: float, keep_reqs: list[dict],
@@ -93,8 +85,10 @@ def _collect_candidates(shots: list[dict], t0: float, t1: float,
     返回 (候选列表, 是否兜底)。兜底 = 排除占用后候选耗尽，放回全部候选并标记人工复核。
     """
     cands = [s for s in shots if _overlaps(s["start"], s["end"], t0, t1)]
-    # 排除纯操作界面镜头（时间调整/菜单等，视觉上打断叙事）
-    cands = [s for s in cands if not _is_ui_only(s)]
+    # v1.0.4 准入门槛：ui_type=gameplay（操作界面）一票否决不入选
+    cands = [s for s in cands if s.get("ui_type") != "gameplay"]
+    # 排除过短镜头（<2s）——切到成片里频繁跳切会让观众眩晕（v1.0.2 与 vision 阶段同步废弃）
+    cands = [s for s in cands if (s["end"] - s["start"]) >= 2.0]
     # 排除落在保留区间（raw_insert）内的镜头——保留区间不排解说句
     if keep_reqs:
         cands = [s for s in cands if not _shot_overlaps_keep(s, keep_reqs, default_video_id)]
@@ -149,13 +143,17 @@ def _pick_clip(candidates: list[dict], t0: float, t1: float,
 
 
 def _frame_paths(shot_id: int, ws: Path) -> list[str]:
-    """返回镜头已有的抽帧相对路径（相对项目根，用于分镜板内联）。"""
+    """返回镜头已有的抽帧相对路径（相对项目根，用于分镜板内联）。
+
+    只取单帧 f_*.jpg（960x540），排除 vision 用的三联拼图 grid.jpg——
+    拼图 2880x540 在 flex 布局里会被 stretch 纵向拉高变形，不适合展示。
+    """
     frames_dir = ws / "frames" / f"shot_{shot_id:03d}"
     if not frames_dir.exists():
         return []
     from .db import PROJECT_ROOT
     return [str(f.resolve().relative_to(PROJECT_ROOT))
-            for f in sorted(frames_dir.glob("*.jpg"))]
+            for f in sorted(frames_dir.glob("f_*.jpg"))]
 
 
 def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
@@ -233,6 +231,10 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
         off = 0.0
         if first_shot is not None and "local_start" in first_shot:
             off = first_shot["start"] - first_shot["local_start"]   # 全局→本地 offset
+        elif timed and "local_start" in timed[0]:
+            # 兜底（候选为空，无镜头可依）：用引用台词行的 offset 换算，
+            # 否则会把全局时间当本地时间写进 EDL，seek 超源视频时长直接渲染失败
+            off = timed[0]["start"] - timed[0]["local_start"]
         local_start = round(clip_start - off, 2)
         local_end = round(clip_end - off, 2)
 
@@ -260,7 +262,7 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
                     "class": c.get("class", "A"),
                     "description": c.get("description") or "",
                     "motion": c.get("motion") or "low",
-                    "has_ui": c.get("has_ui"),
+                    "ui_type": c.get("ui_type"),
                     "frame": (_frame_paths(c["id"], ws_of(c.get("video_id") or default_video_id)) or [""])[0],
                 }
                 for c in all_cands[:5]

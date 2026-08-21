@@ -1,29 +1,43 @@
-"""阶段3：抽帧 + 视觉理解。
+"""阶段3：抽帧 + 视觉理解（拼图模式 + 并发 + ui_type 三分类）。
 
-每镜头抽头/中/尾帧，喂视觉 LLM 产出结构化标签（设计文档 §4 阶段3）。
-A~E 最终分类 = 多信号融合（本模块的 VLM 标签 + 阶段1黑白屏 + 阶段2台词覆盖），
-融合逻辑在阶段4 索引构建时完成。
+优化历史：
+- v1.0.2（2026-08-21）：三帧 hstack 拼图→1次调用 + ThreadPool并发 + ≤2s废弃（详见 0821-v1.0.2-vision阶段加速方案.md）
+- v1.0.4（2026-08-21）：has_ui(bool)+has_dialogue_scene(失效) 合并为 ui_type 三分类
+  (none/dialogue/gameplay)，gameplay 一票否决不入选（详见 0821-v1.0.4-画面UI分类与选片准入方案.md）
+
+A~E 最终分类 = 多信号融合（本模块的 ui_type/motion/is_cutscene + 阶段1黑白屏 + 阶段2台词覆盖），
+融合逻辑在阶段4 索引构建时完成（gameplay 在准入层即排除，不参与分级）。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .llm import chat_with_image
 
 VISION_MODEL = "mimo-v2.5"
+MAX_WORKERS = int(os.environ.get("MMM_VISION_WORKERS", "6"))
+MIN_SHOT_DUR = float(os.environ.get("MMM_VISION_MIN_DUR", "2.0"))
 
-PROMPT = """这是一帧游戏剧情实录视频的画面。请仔细观察并用 JSON 回答：
+PROMPT = """这是一段游戏剧情实录视频某个镜头的头/中/尾三个时刻，横向拼接成一张三格图（从左到右为时间顺序）。
+请综合观察整个镜头，判断画面上的 UI 类型并用 JSON 回答：
 {
   "description": "一句话描述画面内容（角色、场景、动作）",
-  "has_ui": true/false,        // 是否有游戏界面元素：血条/小地图/任务追踪/操作提示/对话框
-  "has_dialogue_scene": true/false,  // 是否处于角色对话演出（人物对峙/说话特写）
-  "motion": "static/low/medium/high",  // 画面动态程度
-  "is_cutscene": true/false    // 是否是电影化过场演出（无UI、构图精致、非实机操作画面）
+  "ui_type": "none/dialogue/gameplay",
+  "motion": "static/low/medium/high",
+  "is_cutscene": true/false
 }
+
+ui_type 判定规则（单选，gameplay 优先否决）：
+- gameplay：画面有任何操作界面元素（血条/小地图/任务追踪/技能图标/菜单/地图界面/商城/弹窗等）即判此项，即使同时有对话框
+- dialogue：画面有对话框或对话分支选项（剧情演出），但无上述操作界面元素
+- none：画面无任何 UI（过场动画/空镜/环境镜头）
+
+motion：整个镜头的画面动态程度。is_cutscene：是否电影化过场演出（无UI、构图精致、非实机操作画面）。
 只输出 JSON，不要其他文字。"""
 
 
@@ -44,86 +58,136 @@ def extract_frames(video: Path, start: float, end: float, out_dir: Path,
     return frames
 
 
-def analyze_frame(frame: Path, model: str = VISION_MODEL) -> dict:
-    """单帧视觉理解，返回结构化标签（解析失败重试一次）。
+def stitch_frames(frames: list[Path], out_path: Path) -> Path:
+    """三帧横向拼接为一张图（一次调用看全镜头，省 2/3 调用量）。"""
+    inputs: list[str] = []
+    for f in frames:
+        inputs += ["-i", str(f)]
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "quiet", *inputs,
+         "-filter_complex", "hstack=inputs=3", "-q:v", "3", str(out_path)],
+        check=True)
+    return out_path
+
+
+def analyze_frame(image: Path, model: str = VISION_MODEL,
+                  prompt: str = PROMPT) -> dict:
+    """单图视觉理解，返回结构化标签（解析失败重试一次）。
 
     注意：mimo-v2.5 是思考型模型，max_tokens 要给推理留足预算（实测 512 会空输出）。
     """
-    raw = chat_with_image(model, PROMPT, frame, max_tokens=1500)
-    try:
-        # 容忍模型输出包在 ```json 代码块里
-        text = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {"_parse_error": True, "_raw": raw[:200]}
+    for attempt in range(2):
+        raw = chat_with_image(model, prompt, image, max_tokens=1500)
+        try:
+            text = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            obj = json.loads(text)
+            # ui_type 容错：模型偶尔输出枚举外的值，归一化
+            ut = obj.get("ui_type")
+            if ut not in ("none", "dialogue", "gameplay"):
+                obj["ui_type"] = "gameplay" if ut in ("ui", "true", True) else "none"
+            return obj
+        except json.JSONDecodeError:
+            if attempt == 0:
+                continue
+            return {"_parse_error": True, "_raw": raw[:200]}
+    return {"_parse_error": True}
 
 
 def analyze_shot(video: Path, shot: dict, work_dir: Path,
                  model: str = VISION_MODEL) -> dict:
-    """分析一个镜头：抽帧 + VLM 标签（多帧结果取并集式保守判定）。
+    """分析一个镜头：短镜头跳过；否则抽 3 帧拼图 → 1 次 VLM 调用。
 
     网关致命错误（4xx/5xx 重试耗尽、ffmpeg 抽帧失败等）不炸掉整批，
     标记 _error 后继续后续镜头；带 _error 的镜头在下次 run 时自动重试。
     """
+    dur = shot["end"] - shot["start"]
+    if dur < MIN_SHOT_DUR:
+        return {
+            "shot_id": shot["id"], "start": shot["start"], "end": shot["end"],
+            "_skip": "short", "frame_count": 0,
+            "description": "短镜头（<2s，已废弃）",
+            "ui_type": "none", "motion": "static", "is_cutscene": False,
+        }
+
     frames_dir = work_dir / "frames" / f"shot_{shot['id']:03d}"
     try:
         frames = extract_frames(video, shot["start"], shot["end"], frames_dir)
-        results = [analyze_frame(f, model) for f in frames]
+        grid = frames_dir / "grid.jpg"
+        stitch_frames(frames, grid)
+        r = analyze_frame(grid, model)
     except Exception as e:
         return {"shot_id": shot["id"], "_error": f"{type(e).__name__}: {e}"}
-    ok = [r for r in results if not r.get("_parse_error")]
-    if not ok:
-        return {"shot_id": shot["id"], "_error": "all_frames_parse_failed"}
+    if r.get("_parse_error"):
+        return {"shot_id": shot["id"], "_error": "parse_failed", "_raw": r.get("_raw", "")}
 
     return {
         "shot_id": shot["id"],
         "start": shot["start"],
         "end": shot["end"],
-        "description": ok[1]["description"] if len(ok) > 1 else ok[0]["description"],  # 中帧为准
-        "has_ui": any(r.get("has_ui") for r in ok),              # 任一帧有 UI 即算有
-        "has_dialogue_scene": any(r.get("has_dialogue_scene") for r in ok),
-        "motion": max((r.get("motion", "low") for r in ok),
-                      key=lambda m: ["static", "low", "medium", "high"].index(m)),
-        "is_cutscene": all(r.get("is_cutscene") for r in ok),    # 全部帧认为是过场才算
+        "description": r.get("description", ""),
+        "ui_type": r.get("ui_type", "none"),
+        "motion": r.get("motion", "low"),
+        "is_cutscene": r.get("is_cutscene", False),
         "frame_count": len(frames),
     }
 
 
-def run(video: Path, work_dir: Path, model: str = VISION_MODEL) -> dict:
-    """批量分析 workspace 下所有镜头 → shots_meta.json。
+def run(video: Path, work_dir: Path, model: str = VISION_MODEL,
+        max_workers: int = MAX_WORKERS) -> dict:
+    """批量分析 workspace 下所有镜头 → shots_meta.json（拼图 + 并发）。
 
     断点续跑：每镜头结果先落盘 shots_meta/shot_XXX.json，已存在且无 _error
-    直接复用（数百次 VLM 调用不可因中途崩溃全丢）；带 _error 的镜头自动重试。
+    直接复用；带 _error 的镜头自动重试。_skip 标记的短镜头也复用（不重跑）。
     """
     shots_path = work_dir / "shots.json"
     shots = json.loads(shots_path.read_text())["shots"]
     metas_dir = work_dir / "shots_meta"
     metas_dir.mkdir(parents=True, exist_ok=True)
-    metas = []
-    errors = []
-    reused = 0
-    total = len(shots)
-    for idx, shot in enumerate(shots, 1):
-        per_shot_path = metas_dir / f"shot_{shot['id']:03d}.json"
-        if per_shot_path.exists():
-            meta = json.loads(per_shot_path.read_text(encoding="utf-8"))
-            if "_error" not in meta:
-                metas.append(meta)
-                reused += 1
-                continue
-        meta = analyze_shot(video, shot, work_dir, model=model)
-        per_shot_path.write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        metas.append(meta)
-        if "_error" in meta:
-            errors.append(shot["id"])
-            print(f"  [{idx}/{total}] shot {shot['id']} ✗ {meta['_error']}", flush=True)
-        elif idx % 10 == 0 or idx == total:
-            # 进度输出（供 tail -f 观察；每 10 镜头一条）
-            print(f"  [{idx}/{total}] shot {shot['id']} ✓", flush=True)
-        # llm.chat 内部已有限速，这里不再额外 sleep
 
-    out = {"model": model, "shots": shots, "metas": metas}
+    metas: dict[int, dict] = {}
+    pending: list[dict] = []
+    reused = skipped = 0
+    for shot in shots:
+        p = metas_dir / f"shot_{shot['id']:03d}.json"
+        if p.exists():
+            meta = json.loads(p.read_text(encoding="utf-8"))
+            if "_error" not in meta:
+                metas[shot["id"]] = meta
+                reused += 1
+                if meta.get("_skip"):
+                    skipped += 1
+                continue
+        pending.append(shot)
+
+    total = len(shots)
+    errors: list[int] = []
+    done = 0
+
+    if pending:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {ex.submit(analyze_shot, video, s, work_dir, model): s for s in pending}
+            for fut in as_completed(futs):
+                s = futs[fut]
+                try:
+                    meta = fut.result()
+                except Exception as e:
+                    meta = {"shot_id": s["id"], "_error": f"{type(e).__name__}: {e}"}
+                (metas_dir / f"shot_{s['id']:03d}.json").write_text(
+                    json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                metas[s["id"]] = meta
+                done += 1
+                if "_error" in meta:
+                    errors.append(s["id"])
+                    print(f"  [{reused+done}/{total}] shot {s['id']} ✗ {meta['_error'][:60]}", flush=True)
+                elif meta.get("_skip"):
+                    skipped += 1
+                if done % 20 == 0 or reused + done == total:
+                    print(f"  进度 {reused+done}/{total}（并发 {max_workers}，"
+                          f"复用 {reused}，跳过 {skipped}，失败 {len(errors)}）", flush=True)
+
+    all_metas = [metas[s["id"]] for s in shots if s["id"] in metas]
+    out = {"model": model, "shots": shots, "metas": all_metas}
     meta_path = work_dir / "shots_meta.json"
     meta_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"total": len(metas), "errors": errors, "reused": reused}
+    return {"total": len(all_metas), "errors": errors,
+            "reused": reused, "skipped": skipped}

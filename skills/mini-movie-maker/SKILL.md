@@ -75,7 +75,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5） |
 | `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
 | `mmm run narrate <task_id>` | 阶段5：解说稿生成 → 闸口1 |
-| `mmm run select <task_id>` | 阶段6：选片 + footage_usage 排除 + 分镜板 → 闸口2 |
+| `mmm run select <video_id> --task <task_id>` | 阶段6：选片 + footage_usage 排除 + 分镜板 → 闸口2（任务模式必须带 `--task`，否则按单视频 workspace 解析） |
 | `mmm run render --task <task_id>` | 阶段7：ffmpeg 直出（含 transform/BGM/字幕/片头拼接） |
 | `mmm export-jianying <task_id>` | 导出器B：剪映草稿（单向终点） |
 | `mmm status / locate / find` | 进度 / 路径直查 / 模糊检索 |

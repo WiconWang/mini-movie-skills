@@ -3,12 +3,15 @@
 合并阶段1~3 产出（shots/fades/lines/shots_meta），按规则融合出 A~E 画面分类，
 形成全片唯一事实源 timeline.json（设计文档 §4 阶段4）。
 
-分类判定规则（E 优先裁决）：
-- E：起止处有黑/白屏区间 且 VLM 判定无 UI           —— 标准过场
-- D：无台词覆盖 且 无UI 且 非纯静止                  —— 无台词运镜
-- C：高动态（战斗/特效），不强制台词覆盖              —— 实战修正：战斗镜头常无台词
-- B：有台词覆盖 且 有运镜/动作（medium）             —— 对话有镜头活动
-- A：其余（静态对话、带UI的低动态实机画面）            —— 选片最末位
+分类判定规则（v1.0.4：gameplay 准入否决 + v1.0.0 E~A 分级）：
+- X：ui_type=gameplay（操作界面）一票否决，不参与分级，select 不入选
+- E：起止处有黑/白屏区间 且 ui_type=none（无UI）  —— 标准过场
+- D：无台词覆盖 且 ui_type=none 且 非纯静止      —— 无台词运镜
+- C：高动态（战斗/特效），不强制台词覆盖          —— 实战修正：战斗镜头常无台词
+- B：有台词覆盖 且 有运镜/动作（medium）          —— 对话有镜头活动
+- A：其余（静态对话、ui_type=dialogue 的低动态）   —— 选片最末位
+
+meta 缺省（vision 未跑/失败）时 ui_type 保守判 gameplay（排除，宁缺勿滥）。
 """
 
 from __future__ import annotations
@@ -17,6 +20,8 @@ import json
 from pathlib import Path
 
 MOTION_RANK = {"static": 0, "low": 1, "medium": 2, "high": 3}
+# E > D > C > B > A（0 最优，与 stage_select.CLASS_RANK 一致）
+CLASS_RANK = {"E": 0, "D": 1, "C": 2, "B": 3, "A": 4}
 
 
 def _overlaps(a0: float, a1: float, b0: float, b1: float) -> bool:
@@ -24,9 +29,20 @@ def _overlaps(a0: float, a1: float, b0: float, b1: float) -> bool:
 
 
 def classify(shot: dict, meta: dict | None, has_lines: bool, fades: list[dict]) -> str:
-    """多信号融合分类（meta 为 None 时按保守默认处理）。"""
-    has_ui = meta.get("has_ui", True) if meta else True
+    """多信号融合分类（meta 为 None 时按保守默认处理）。
+
+    v1.0.4：gameplay 准入门槛（一票否决）；
+    v1.0.5：过场升级垫——is_cutscene（电影化过场演出）信号参与分级，
+    至少 B 级；长过场（≥6s）至少 C 级；只升不降。解决"高价值长过场
+    （升岛动画等）被 A 级空镜压过、选片遗漏"的问题。
+    """
+    # meta 缺省保守判 gameplay（排除），宁缺勿滥
+    ui_type = meta.get("ui_type", "gameplay") if meta else "gameplay"
     motion = MOTION_RANK.get(meta.get("motion", "low"), 1) if meta else 1
+
+    # 准入门槛：gameplay 一票否决，不参与 E~A 分级（v1.0.4）
+    if ui_type == "gameplay":
+        return "X"
 
     # E：镜头起止附近有黑/白屏（±1s 容差）且无 UI
     bounded = any(
@@ -34,15 +50,24 @@ def classify(shot: dict, meta: dict | None, has_lines: bool, fades: list[dict]) 
         _overlaps(f["start"], f["end"], shot["end"] - 1.0, shot["end"] + 1.0)
         for f in fades
     )
-    if bounded and not has_ui:
-        return "E"
-    if not has_lines and not has_ui and motion >= 1:
-        return "D"
-    if motion >= 3:
-        return "C"
-    if has_lines and motion >= 2:
-        return "B"
-    return "A"
+    if bounded and ui_type == "none":
+        cls = "E"
+    elif not has_lines and ui_type == "none" and motion >= 1:
+        cls = "D"
+    elif motion >= 3:
+        cls = "C"
+    elif has_lines and motion >= 2:
+        cls = "B"
+    else:
+        cls = "A"
+
+    # v1.0.5 过场升级垫：is_cutscene 镜头至少 B，长过场(>=6s)至少 C；只升不降
+    if meta and meta.get("is_cutscene"):
+        dur = shot["end"] - shot["start"]
+        up = "C" if dur >= 6 else "B"
+        if CLASS_RANK[up] < CLASS_RANK[cls]:
+            cls = up
+    return cls
 
 
 def build_timeline(shots: list[dict], fades: list[dict], lines: list[dict],
@@ -63,12 +88,12 @@ def build_timeline(shots: list[dict], fades: list[dict], lines: list[dict],
             **s,
             "class": cls,
             "description": meta.get("description") if meta else None,
-            "has_ui": meta.get("has_ui") if meta else None,
+            "ui_type": meta.get("ui_type") if meta else None,
             "motion": meta.get("motion") if meta else None,
             "line_ids": [l["id"] for l in covered],
         })
 
-    counts = {c: sum(1 for s in out_shots if s["class"] == c) for c in "EDCBA"}
+    counts = {c: sum(1 for s in out_shots if s["class"] == c) for c in "EDCBAX"}
     return {"shots": out_shots, "fades": fades, "lines": lines,
             "stats": {"shots": len(out_shots), "by_class": counts}}
 
@@ -133,7 +158,7 @@ def build_global(task_id: str) -> dict:
                             "duration": round(dur, 3)})
         offset += dur
 
-    counts = {c: sum(1 for s in m_shots if s["class"] == c) for c in "EDCBA"}
+    counts = {c: sum(1 for s in m_shots if s["class"] == c) for c in "EDCBAX"}
     out = {"task_id": task_id, "videos": videos_meta,
            "shots": m_shots, "lines": m_lines, "fades": m_fades,
            "stats": {"shots": len(m_shots), "by_class": counts,

@@ -25,17 +25,18 @@ FUSE_MAX_TOKENS = 16384
 CHARS_PER_MINUTE = 275
 
 # 讲述人风格指令（分片与融合必须统一遵循，防止风格漂移）
-_NARRATIVE_STYLE = """1. 只讲述素材中实际出现的情节、角色、对话和画面信息，不添加素材之外的事实。可以根据素材进行合理推断，但必须使用“可能”“初步判断”“看起来”“难道”“这意味着”等措辞明确推断性质。
-2. 整体采用沉浸式剧情复盘风格：第三人称叙事为主，在调查、推理和关键转折处适度使用“我们”“旅行者一行”等表达，增强代入感，但不要每句都强行使用“我们”。
-3. 普通对话不要逐句复述。优先把对话压缩成事件、行动和结果，例如“众人得知”“调查发现”“这让大家开始怀疑”。只有关键证据、身份揭露、重大反转、重要情绪表达或能体现角色个性的台词，才保留直接引语或明确标注发言者。
-4. 禁止连续使用“角色名 + 说/表示/回答/解释/询问”等句式。连续两句中最多出现一次人物发言归属；一条解说中不要安排多个角色轮流发言。多个角色提供相同信息时，合并为一段调查过程。
-5. 每个叙事单元只推进一个核心事件，并说明该事件带来的结果、判断或新疑问。优先使用“但”“然而”“于是”“结果”“出乎意料的是”“更奇怪的是”“也就是说”“难道”等因果、转折和悬念连接方式，但不要机械堆砌。
-6. 句子保持短促、自然、适合中文配音。每个 narration 条目通常包含 1~3 个短句，每个短句尽量只表达一个动作或信息；避免一个条目塞入多个角色的连续发言和多个无关事件。
-7. 解说人格克制、自然、有情绪温度，像一个冷静但投入的故事讲述者。情绪应服务于剧情，在危险、误会、失去、身份揭露和反转处自然加强，不要持续煽情、夸张吐槽或使用网络热梗。
-8. 多个连续场景承担相同功能时要主动合并，避免“依次询问角色 A、角色 B、角色 C”的流水账；应概括调查结果，并突出这个结果对后续剧情的影响。"""
+_NARRATIVE_STYLE = """1. 【素材边界】只讲述素材中实际出现的情节、角色、对话和画面信息，不添加素材之外的事实。可以根据素材进行合理推断，但必须使用“可能”“初步判断”“看起来”“难道”“这意味着”等措辞明确推断性质。
+2. 【玩家视角】站在游戏操作者（玩家）的视角讲述，“我们”指代玩家扮演的主角（如旅行者、漂泊者、管理员），是观察与行动的第一人称锚点：画面中主角的调查、行动、发现、决定都从“我们”出发，其他角色（NPC）用名字或称谓第三人称描述。例如“她让我们用元素视野查看，果然，信纸背面浮现出一幅地图”。不要每句都堆“我们”，在行动、发现、决定处自然使用即可。
+3. 【对话压缩】普通对话不要逐句复述。优先把对话压缩成事件、行动和结果，例如“我们发现”“众人得知”“调查发现”“这让大家开始怀疑”。只有关键证据、身份揭露、重大反转、重要情绪表达或能体现角色个性的台词，才保留直接引语或明确标注发言者。
+4. 【群像与点名】主角（玩家扮演者）一律用“我们”，不出现“旅行者”等主角称呼；多人对话不要逐一点名，反应性台词用“有人”“另一位”“其中一人”等模糊化；人名只留给关键推动者与真相揭示者，每一段内点名不超过2个。重要揭示者先动作后点名，用“直到”“还是”“终于”衔接制造悬念，例如“直到阿贝多蹲下身仔细查看，才道出真相”。禁止连续使用“角色名+说/表示/回答/解释/询问/提醒/判断/觉得”等句式，换用“主张”“嗅到”“道出”“追问”“嘟囔”等有画面感的动词。多个角色提供相同信息时，合并为一段调查过程。
+5. 【开头优先】句子开头优先用场景、事件、情绪带入，避免人名开头；全文人名开头的句子占比控制在20%以内。
+6. 【事件推进】每个叙事单元只推进一个核心事件，并说明该事件带来的结果、判断或新疑问。优先使用“但”“然而”“于是”“结果”“却”“反倒”“出乎意料的是”“更奇怪的是”“也就是说”“难道”等因果、转折和悬念连接方式，但不要机械堆砌。
+7. 【短句配音】句子保持短促、自然、适合中文配音。每个 narration 条目通常包含1~3个短句，每个短句尽量只表达一个动作或信息；避免一个条目塞入多个角色的连续发言和多个无关事件。
+8. 【克制温度】解说人格克制、自然、有情绪温度，像一个冷静但投入的故事讲述者。情绪应服务于剧情，在危险、误会、失去、身份揭露和反转处自然加强，不要持续煽情、夸张吐槽或使用网络热梗。
+9. 【合并流水账】多个连续场景承担相同功能时要主动合并，避免“依次询问角色A、角色B、角色C”的流水账；应概括调查结果，并突出这个结果对后续剧情的影响。段落关键节点用一帧画面感描写收束，而不是以“人物说”结尾。"""
 
 # 风格示例（只学习表达方式，不复用示例中的人物、情节和措辞）
-_NARRATIVE_EXAMPLE = """“他们接连调查了几个人，却没有一个人听说过这座岛。连地图上都找不到它，事情开始变得不对劲。”
+_NARRATIVE_EXAMPLE = """“我们接连调查了几个人，却没有一个人听说过这座岛。连地图上都找不到它，事情开始变得不对劲。”
 “尸体没有伤口，也没有中毒迹象。既然没人进出过房间，那么凶手就只可能藏在我们之中。”"""
 
 
@@ -77,11 +78,12 @@ def _build_prompt(timeline: dict, target_minutes: float, *,
         )
 
     shot_texts = []
+    _ui_label = {"none": "无UI", "dialogue": "对话UI", "gameplay": "操作UI"}
     for s in shots:
         desc = s.get("description") or "（无描述）"
         cls = s.get("class", "A")
         motion = s.get("motion", "low")
-        ui = "有UI" if s.get("has_ui") else "无UI"
+        ui = _ui_label.get(s.get("ui_type"), "无UI")
         shot_texts.append(
             f"镜头{s['id']:03d}[{cls}] {s['start']:.1f}-{s['end']:.1f} "
             f"motion={motion} {ui}：{desc}"
@@ -236,6 +238,7 @@ def _build_fuse_prompt(segments: list[dict], target_minutes: float) -> str:
     for seg in segments:
         vid = seg.get("video_id")
         items = [f"句{n.get('id')}(id={n.get('id')}) {n.get('text')}"
+                 + f" 引用台词:{n.get('related_line_ids')}"
                  for n in seg.get("narration", [])]
         blocks.append(f"【片段 {vid}】\n" + "\n".join(items))
     segments_block = "\n\n".join(blocks)
@@ -249,7 +252,7 @@ def _build_fuse_prompt(segments: list[dict], target_minutes: float) -> str:
 1. 统一口吻、术语、人称，删除跨片段重复内容。
 2. 按时间顺序重排，补齐片段边界的衔接，让整篇故事连续流畅。
 3. 控制 15~30 个叙事单元，覆盖起因、发展、主要转折、结局，不遗漏任何片段的核心情节。
-4. 每句解说必须标注依据的台词行，related_line_ids 用 {{"video_id": "...", "line_id": N}} 结构——video_id 必须是该句所属片段的标识，line_id 必须是草稿中出现过的 id。
+4. 每句解说必须标注依据的台词行，related_line_ids 用 {{"video_id": "...", "line_id": N}} 结构——**line_id 填你依据的片段草稿句号（即草稿里"句N(id=N)"的 N）**，只许引用草稿中实际存在的句号，多个草稿句就写多个对象。
 5. 不要输出具体时间秒数。
 
 风格示例（只学习表达方式，不复用示例中的人物、情节和措辞）：
@@ -276,6 +279,35 @@ def fuse(segments: list[dict], *, target_minutes: float) -> list[dict]:
     prompt = _build_fuse_prompt(segments, target_minutes)
     return _chat_json(prompt, max_tokens=FUSE_MAX_TOKENS,
                       temperature=0.4, label="融合")
+
+
+def _remap_line_refs(narration: list[dict], segments: list[dict]) -> list[dict]:
+    """融合输出引用的是【草稿句号】→ 映射回台词行 id（草稿句的 related_line_ids）。
+
+    融合 LLM 对"草稿句号"与"台词行 id"两套数字易混淆，让 LLM 只引用草稿句号，
+    此处做确定性映射：seg 草稿第 N 句 → 该句的 related_line_ids（台词行 id 集）。
+    映射不到的引用原样保留（select 端解析失败走兜底，不阻塞）。
+    """
+    seg_by_key: dict[tuple[str, int], list] = {}
+    for seg in segments:
+        vid = seg.get("video_id")
+        for sn in seg.get("narration", []):
+            seg_by_key[(vid, sn.get("id"))] = sn.get("related_line_ids", [])
+    out = []
+    for s in narration:
+        refs = []
+        for r in s.get("related_line_ids", []):
+            if not isinstance(r, dict):
+                refs.append(r)
+                continue
+            vid, lid = r.get("video_id"), r.get("line_id")
+            if (vid, lid) in seg_by_key:
+                refs.extend({"video_id": vid, "line_id": lid2}
+                            for lid2 in seg_by_key[(vid, lid)])
+            else:
+                refs.append(r)
+        out.append({**s, "related_line_ids": refs})
+    return out
 
 
 def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
@@ -309,6 +341,8 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
                 json.dumps(seg, ensure_ascii=False, indent=2), encoding="utf-8")
             segments.append(seg)
         narration = fuse(segments, target_minutes=target_minutes)
+        # 融合输出引用的是草稿句号，映射回台词行 id（确定性，不依赖 LLM 记性）
+        narration = _remap_line_refs(narration, segments)
         used_mode = "segment"
     else:
         # 层1 压缩的单次调用（单视频）

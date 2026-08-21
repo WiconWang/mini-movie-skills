@@ -8,12 +8,13 @@ videos:
     version: "4.3"            # 可选，参与命名模板
     chapter: 罪人舞步旋        # 可选，参与命名模板
     path: materials/gs-043    # 必填
+  # 1.6 盛夏海岛大冒险 全章五段（源文件符号链接自 temp/）
+  # 注：BWIKI「迷境之岛」任务横跨 P1+P2 两集视频，文稿已按行拆分（P1=前443行，P2=后32行）
   - video_id: gs-16-mjzd
     series: 原神
     version: "1.6"
-    chapter: 迷境之岛！无法预测的旅行
+    chapter: 盛夏海岛大冒险-P2
     path: materials/gs-16-mjzd
-  # 1.6 盛夏海岛大冒险 全章五段（P1/P3~P5 为按段物料，源文件符号链接自 temp/）
   - video_id: gs-16-p1
     series: 原神
     version: "1.6"

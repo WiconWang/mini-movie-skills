@@ -32,6 +32,10 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"命令失败: {' '.join(cmd[:6])}...\n{r.stderr.decode()[-800:]}")
 
 
+TTS_MIN_INTERVAL = 1.5   # edge-tts 白嫖接口限速：两次调用最小间隔（秒）
+_last_tts_call = 0.0
+
+
 def tts_say(text: str, out_wav: Path, voice: str = TTS_VOICE) -> float:
     """本机 say 合成 → wav，返回实际时长（秒）。"""
     with tempfile.NamedTemporaryFile(suffix=".aiff", delete=False) as f:
@@ -46,20 +50,39 @@ def tts_say(text: str, out_wav: Path, voice: str = TTS_VOICE) -> float:
 
 
 def tts_edge(text: str, out_wav: Path, voice: str = EDGE_VOICE, rate: str = "+0%") -> float:
-    """edge-tts 合成 → wav（微软 Edge 朗读接口，免费无 key，需联网；仅验证用）。"""
+    """edge-tts 合成 → wav（微软 Edge 朗读接口，免费无 key，需联网；仅验证用）。
+
+    edge-tts 是免费白嫖接口，有两个坑：
+    1. 偶发 NoAudioReceived（连接微软服务瞬时失败）→ 重试 3 次，间隔 3s/6s/9s；
+    2. 连续快速请求会被限流（实测 5 句内必现）→ 全局最小间隔 1.5s/句。
+    """
     import asyncio
+    import time
 
     import edge_tts
 
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        mp3 = Path(f.name)
-    try:
-        asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(str(mp3)))
-        _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mp3),
-              "-ar", "48000", "-ac", "1", str(out_wav)])
-        return probe_duration(out_wav)
-    finally:
-        mp3.unlink(missing_ok=True)
+    global _last_tts_call
+    last_err: Exception | None = None
+    for attempt in range(3):
+        # 限速：与上一次 TTS 调用至少间隔 1.5s（白嫖接口被限流的实测对策）
+        gap = time.time() - _last_tts_call
+        if gap < TTS_MIN_INTERVAL:
+            time.sleep(TTS_MIN_INTERVAL - gap)
+        _last_tts_call = time.time()
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            mp3 = Path(f.name)
+        try:
+            asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(str(mp3)))
+            _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mp3),
+                  "-ar", "48000", "-ac", "1", str(out_wav)])
+            return probe_duration(out_wav)
+        except Exception as e:
+            last_err = e
+            time.sleep(3 * (attempt + 1))   # 3s → 6s → 9s
+        finally:
+            mp3.unlink(missing_ok=True)
+    raise RuntimeError(f"edge-tts 重试 3 次仍失败: {last_err}")
 
 
 def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
