@@ -19,7 +19,8 @@ from pathlib import Path
 
 from .llm import chat_with_image
 
-VISION_MODEL = "mimo-v2.5"
+# 视觉模型（.env 可覆盖：MMM_VISION_MODEL，未配置时回退默认）
+VISION_MODEL = os.environ.get("MMM_VISION_MODEL", "mimo-v2.5")
 MAX_WORKERS = int(os.environ.get("MMM_VISION_WORKERS", "6"))
 MIN_SHOT_DUR = float(os.environ.get("MMM_VISION_MIN_DUR", "2.0"))
 

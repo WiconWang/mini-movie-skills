@@ -19,6 +19,26 @@ from pathlib import Path
 
 from .db import PROJECT_ROOT
 
+
+def _load_env_file() -> dict[str, str]:
+    """读取 .env 文件为 dict（不做环境注入）。键值均 strip，忽略注释行。"""
+    env = PROJECT_ROOT / ".env"
+    vals: dict[str, str] = {}
+    if env.exists():
+        for line in env.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                vals[k.strip()] = v.strip()
+    return vals
+
+
+# 模块级：把 .env 注入 os.environ（setdefault 不覆盖 shell 已有的同名环境变量）。
+# 必须放在任何 os.environ.get 求值之前——stage 模块 import 时即可读到 .env 中的
+# 模型名等配置，无需等首次 LLM 调用。
+for _k, _v in _load_env_file().items():
+    os.environ.setdefault(_k, _v)
+del _k, _v
+
 # 默认限速：每次调用间隔最少秒数（防突发并发，非风控要求——实测 zen 网关不限频率）
 MIN_INTERVAL_SEC = float(os.environ.get("MMM_LLM_INTERVAL", "0.5"))
 MAX_RETRIES = 5
@@ -27,15 +47,8 @@ _last_call = 0.0
 
 
 def _load_env() -> tuple[str, str]:
-    env = PROJECT_ROOT / ".env"
-    vals = {}
-    if env.exists():
-        for line in env.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                vals[k.strip()] = v.strip()
-    base = os.environ.get("OPENCODE_ZEN_BASE_URL") or vals.get("OPENCODE_ZEN_BASE_URL", "")
-    key = os.environ.get("OPENCODE_ZEN_API_KEY") or vals.get("OPENCODE_ZEN_API_KEY", "")
+    base = os.environ.get("OPENCODE_ZEN_BASE_URL", "")
+    key = os.environ.get("OPENCODE_ZEN_API_KEY", "")
     if not base or not key:
         raise RuntimeError("缺少 OPENCODE_ZEN_BASE_URL / OPENCODE_ZEN_API_KEY（.env 或环境变量）")
     return base.rstrip("/"), key

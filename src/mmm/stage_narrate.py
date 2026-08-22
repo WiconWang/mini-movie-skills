@@ -8,12 +8,14 @@ LLM 不直接输出秒数，从结构上消灭伪造时间戳的故障（设计�
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
 from .llm import chat
 
-NARRATE_MODEL = "deepseek-v4-flash"
+# 解说模型（.env 可覆盖：MMM_NARRATE_MODEL，未配置时回退默认）
+NARRATE_MODEL = os.environ.get("MMM_NARRATE_MODEL", "deepseek-v4-flash")
 # deepseek-v4-flash 是思考型模型：reasoning 与正文共享 max_tokens 预算。
 # 全量索引（2万+ token 输入）下推理可烧掉 8k+，预算不足会 finish_reason=length 且正文为空。
 # 实测推理 20102 字符 + 正文约 3k token，给 32768 留足余量。
