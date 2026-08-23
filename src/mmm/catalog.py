@@ -14,6 +14,7 @@ import yaml
 from .db import PROJECT_ROOT, init_db
 
 CATALOG_YAML = PROJECT_ROOT / "catalog.yaml"
+CATALOG_EXAMPLE = PROJECT_ROOT / "catalog.example.yaml"
 
 
 def add_video(video_id: str, series: str, version: str = "", chapter: str = "") -> dict:
@@ -146,7 +147,15 @@ def register_usage(task_id: str, clips: list[dict]) -> int:
 
 
 def import_catalog(yaml_path: Path = CATALOG_YAML) -> tuple[int, int]:
-    """把 catalog.yaml 导入台账。返回 (新增数, 更新数)。"""
+    """把本机 catalog.yaml 导入台账。返回 (新增数, 更新数)。
+
+    真实登记文件不入 Git；新机器请从 catalog.example.yaml 复制后编辑。
+    """
+    if not yaml_path.exists():
+        raise FileNotFoundError(
+            f"未找到台账文件: {yaml_path.name}（本机登记文件，不入 Git）\n"
+            "请先复制模板: cp catalog.example.yaml catalog.yaml"
+        )
     data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
     videos = data.get("videos", [])
     conn = init_db()

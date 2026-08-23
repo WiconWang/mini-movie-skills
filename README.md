@@ -68,14 +68,15 @@ cp .env.example .env   # 若存在；否则手动创建
 # OPENCODE_ZEN_BASE_URL=<网关地址>
 # OPENCODE_ZEN_API_KEY=<你的 key>
 
-# 6. 初始化台账 + 导入素材登记
+# 6. 初始化台账 + 导入素材登记（catalog.yaml 是本机登记文件，不入 Git）
+cp catalog.example.yaml catalog.yaml   # 首次复制模板，再填入本机素材
 python3 -m mmm.cli db-init
 python3 -m mmm.cli catalog-import
 
 # 7. 放置物料（不进 git）
 #   materials/{video_id}/source.mp4     ← 视频文件
 #   materials/{video_id}/script.jsonl   ← 台词（工具 tools/md2jsonl.py 可从 BWIKI markdown 转换）
-#   catalog.yaml 登记每个 video_id
+#   本机 catalog.yaml 登记每个 video_id（模板见 catalog.example.yaml）
 
 # 8. 验证
 python3 -m mmm.cli status
@@ -86,7 +87,7 @@ python3 -m mmm.cli status
 ## 快速开始（完整流程）
 
 ```bash
-# 0. 登记素材（catalog.yaml 维护或 mmm add）
+# 0. 登记素材（本机 catalog.yaml 维护或 mmm add）
 mmm add gs-16-p1 --series 原神 --version 1.6 --chapter "盛夏海岛大冒险-P1"
 
 # 1. 建任务（关联一个或多个视频，顺序即 seq）
@@ -199,7 +200,7 @@ Agent 会：创建任务 → 逐项确认配置（分辨率/FPS/黑边/缩放/BG
 ├── output/{task_id}/     # 成片（gitignore）
 ├── temp/                 # 临时素材/static ffmpeg（gitignore）
 ├── db/schema.sql         # 台账结构
-├── catalog.yaml          # 素材登记
+├── catalog.example.yaml  # 素材登记模板；真实登记为本机 catalog.yaml（gitignore）
 └── tools/md2jsonl.py     # BWIKI markdown 台词 → script.jsonl
 ```
 

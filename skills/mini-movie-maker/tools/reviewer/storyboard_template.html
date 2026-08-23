@@ -48,6 +48,7 @@
   .range-edit { display:none; margin-top:10px; gap:8px; align-items:center; font-size:12px; color:var(--dim); }
   .range-edit.open { display:flex; }
   .range-edit input { width:90px; background:var(--card2); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:4px 10px; font-variant-numeric:tabular-nums; }
+  .range-edit .hint { color:var(--dim); font-size:11px; }
   #exportbar { position:fixed; left:0; right:0; bottom:0; background:rgba(18,20,26,.92); backdrop-filter:blur(8px); border-top:1px solid var(--line); padding:12px 28px; display:flex; gap:14px; align-items:center; z-index:10; }
   #exportbar button { background:var(--accent); color:#0b1523; border:none; border-radius:10px; padding:9px 22px; font-weight:700; cursor:pointer; font-size:14px; transition:filter .12s; }
   #exportbar button:hover { filter:brightness(1.1); }
@@ -83,7 +84,29 @@ document.getElementById('subtitle').textContent =
   `任务 ${DATA.task_id} · ${edl.clips.length} 个片段 · 目标 ${DATA.target_minutes || '?'} 分钟`;
 
 function fmt(t){ const m=Math.floor(t/60), s=(t%60).toFixed(1); return `${m}:${s.padStart(4,'0')}`; }
-function estDuration(){ return edl.clips.reduce((a,c)=>a+(c.end-c.start),0); }
+function fmtInput(t){
+  const h = Math.floor(t/3600);
+  const m = Math.floor((t%3600)/60);
+  const s = (t%60).toFixed(1);
+  return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${s.padStart(4,'0')}` : `${m}:${s.padStart(4,'0')}`;
+}
+function parseTime(v){
+  v = String(v).trim();
+  if (v === '') return NaN;
+  if (/^\d+(\.\d+)?$/.test(v)) return parseFloat(v);
+  const parts = v.split(':').map(Number);
+  if (parts.length < 2 || parts.some(Number.isNaN)) return NaN;
+  let sec = 0;
+  for (const p of parts) sec = sec * 60 + p;
+  return sec;
+}
+function clipDuration(c){
+  if (c.keep_audio) return Math.max(c.end - c.start, 0.5);
+  const cps = DATA.chars_per_sec || 4.5;
+  const spd = DATA.tts_speed || 1;
+  return Math.max((c.text || '').length / (cps * spd), 1.0) + 0.3;
+}
+function estDuration(){ return edl.clips.reduce((a,c)=>a+clipDuration(c),0); }
 function refreshEst(){
   document.getElementById('est').textContent = `预计成片 ${fmt(estDuration())}`;
   document.getElementById('dirty').textContent = dirty ? '● 有未导出修改' : '';
@@ -102,11 +125,11 @@ function render(){
     div.className = 'clip' + (c.type === 'raw_insert' ? ' raw_insert' : '');
     const badge = c.type === 'raw_insert'
       ? '<span class="badge raw">高光·原声</span>'
-      : `<span class="badge ${c.class||'A'}">${c.class||'?'}级</span>`;
+      : `<span class="badge ${c.class||'A'}">${c.class||'A'}级</span>`;
     div.innerHTML = `
       <div class="frames">${(c.frames||[]).map(f=>`<img src="${f}" loading="lazy">`).join('') || '<span class="meta">无帧</span>'}</div>
       <div class="body">
-        <div class="headrow">${badge}<span class="time">${c.video_id} · ${fmt(c.start)} → ${fmt(c.end)}（${(c.end-c.start).toFixed(1)}s）</span></div>
+        <div class="headrow">${badge}<span class="time">${c.video_id} · ${fmt(c.start)} → ${fmt(c.end)}（源 ${(c.end-c.start).toFixed(1)}s${c.keep_audio ? '' : ` · 解说约 ${clipDuration(c).toFixed(1)}s`}）</span></div>
         <div class="narr">${(c.text || c.note || '').replace(/</g,'&lt;')}</div>
         <div class="ops">
           <button onclick="toggleCands(${i})">换镜头</button>
@@ -120,8 +143,8 @@ function render(){
           </div>`).join('') || '<span class="meta">无候选</span>'}
         </div>
         <div class="range-edit" id="range-${i}">
-          起 <input id="rs-${i}" value="${c.start}"> 止 <input id="re-${i}" value="${c.end}">
-          <button onclick="applyRange(${i})">应用</button>
+          起 <input id="rs-${i}" value="${fmtInput(c.start)}" placeholder="2:45 或 165"> 止 <input id="re-${i}" value="${fmtInput(c.end)}" placeholder="2:47 或 167">
+          <button onclick="applyRange(${i})">应用</button><span class="hint">可直接填 2:45 / 00:02:45 / 165</span>
         </div>
       </div>`;
     board.appendChild(div);
@@ -141,21 +164,33 @@ function swap(i, j){
   markDirty(); render();
 }
 function applyRange(i){
-  edl.clips[i].start = parseFloat(document.getElementById(`rs-${i}`).value);
-  edl.clips[i].end = parseFloat(document.getElementById(`re-${i}`).value);
+  const s = parseTime(document.getElementById(`rs-${i}`).value);
+  const e = parseTime(document.getElementById(`re-${i}`).value);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s)) { alert('时间格式无效，请填秒数（165）或 分:秒（2:45）'); return; }
+  edl.clips[i].start = s;
+  edl.clips[i].end = e;
   markDirty(); render();
 }
 function delClip(i){ edl.clips.splice(i,1); markDirty(); render(); }
 function insertRaw(i){
-  const start = parseFloat(prompt('高光段起点（秒，源视频时间）', '0'));
-  const end = parseFloat(prompt('高光段终点（秒）', '0'));
+  const start = parseTime(prompt('高光段起点（源视频时间，可用 165 或 2:45）', '0'));
+  const end = parseTime(prompt('高光段终点（可用 167 或 2:47）', '0'));
   if (!(end > start)) return;
   edl.clips.splice(i+1, 0, { type:'raw_insert', video_id: edl.clips[i].video_id,
     start, end, keep_audio:true, note:'人工插入高光段', frames:[] });
   markDirty(); render();
 }
 function exportEDL(){
-  const blob = new Blob([JSON.stringify(edl, null, 2)], {type:'application/json'});
+  // frames/candidates 只是分镜板的预览数据（含 base64 帧图），不是剪辑决策，
+  // 导出时必须剥离，否则 edl.json 会膨胀到几十 MB
+  const out = {...edl, clips: edl.clips.map(c => {
+    const o = {};
+    for (const k in c) {
+      if (k !== 'frames' && k !== 'candidates') o[k] = c[k];
+    }
+    return o;
+  })};
+  const blob = new Blob([JSON.stringify(out, null, 2)], {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'edl.json';

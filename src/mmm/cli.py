@@ -464,9 +464,13 @@ def export_jianying(
 
 @app.command("catalog-import")
 def catalog_import() -> None:
-    """把 catalog.yaml 导入台账（人维护 YAML，机器用 SQLite）。"""
+    """把本机 catalog.yaml 导入台账（真实登记文件不入 Git）。"""
     from . import catalog
 
+    if not catalog.CATALOG_YAML.exists():
+        typer.echo("✗ 未找到 catalog.yaml（本机登记文件，不入 Git）")
+        typer.echo("  请先复制模板: cp catalog.example.yaml catalog.yaml，再填入本机素材")
+        raise typer.Exit(1)
     added, updated = catalog.import_catalog()
     typer.echo(f"✓ 台账导入完成: 新增 {added}, 更新 {updated}")
 

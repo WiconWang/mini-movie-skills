@@ -7,39 +7,45 @@ LLM 不直接输出秒数，从结构上消灭伪造时间戳的故障（设计�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from . import models
 from .llm import chat
 
 # 解说模型（.env 可覆盖：MMM_NARRATE_MODEL，未配置时回退默认）
 NARRATE_MODEL = os.environ.get("MMM_NARRATE_MODEL", "deepseek-v4-flash")
-# deepseek-v4-flash 是思考型模型：reasoning 与正文共享 max_tokens 预算。
-# 全量索引（2万+ token 输入）下推理可烧掉 8k+，预算不足会 finish_reason=length 且正文为空。
-# 实测推理 20102 字符 + 正文约 3k token，给 32768 留足余量。
-NARRATE_MAX_TOKENS = 32768
-# 分层生成（5-10 视频合一篇）：分片短稿用较小预算，融合保留大预算
-SEGMENT_MAX_TOKENS = 8192
-FUSE_MAX_TOKENS = 16384
 # 中文口语约 250~300 字/分钟，取中值用于字数预算
 CHARS_PER_MINUTE = 275
 
 # 讲述人风格指令（分片与融合必须统一遵循，防止风格漂移）
-_NARRATIVE_STYLE = """1. 【素材边界】只讲述素材中实际出现的情节、角色、对话和画面信息，不添加素材之外的事实。可以根据素材进行合理推断，但必须使用“可能”“初步判断”“看起来”“难道”“这意味着”等措辞明确推断性质。
-2. 【玩家视角】站在游戏操作者（玩家）的视角讲述，“我们”指代玩家扮演的主角（如旅行者、漂泊者、管理员），是观察与行动的第一人称锚点：画面中主角的调查、行动、发现、决定都从“我们”出发，其他角色（NPC）用名字或称谓第三人称描述。例如“她让我们用元素视野查看，果然，信纸背面浮现出一幅地图”。不要每句都堆“我们”，在行动、发现、决定处自然使用即可。
-3. 【对话压缩】普通对话不要逐句复述。优先把对话压缩成事件、行动和结果，例如“我们发现”“众人得知”“调查发现”“这让大家开始怀疑”。只有关键证据、身份揭露、重大反转、重要情绪表达或能体现角色个性的台词，才保留直接引语或明确标注发言者。
-4. 【群像与点名】主角（玩家扮演者）一律用“我们”，不出现“旅行者”等主角称呼；多人对话不要逐一点名，反应性台词用“有人”“另一位”“其中一人”等模糊化；人名只留给关键推动者与真相揭示者，每一段内点名不超过2个。重要揭示者先动作后点名，用“直到”“还是”“终于”衔接制造悬念，例如“直到阿贝多蹲下身仔细查看，才道出真相”。禁止连续使用“角色名+说/表示/回答/解释/询问/提醒/判断/觉得”等句式，换用“主张”“嗅到”“道出”“追问”“嘟囔”等有画面感的动词。多个角色提供相同信息时，合并为一段调查过程。
-5. 【开头优先】句子开头优先用场景、事件、情绪带入，避免人名开头；全文人名开头的句子占比控制在20%以内。
-6. 【事件推进】每个叙事单元只推进一个核心事件，并说明该事件带来的结果、判断或新疑问。优先使用“但”“然而”“于是”“结果”“却”“反倒”“出乎意料的是”“更奇怪的是”“也就是说”“难道”等因果、转折和悬念连接方式，但不要机械堆砌。
-7. 【短句配音】句子保持短促、自然、适合中文配音。每个 narration 条目通常包含1~3个短句，每个短句尽量只表达一个动作或信息；避免一个条目塞入多个角色的连续发言和多个无关事件。
-8. 【克制温度】解说人格克制、自然、有情绪温度，像一个冷静但投入的故事讲述者。情绪应服务于剧情，在危险、误会、失去、身份揭露和反转处自然加强，不要持续煽情、夸张吐槽或使用网络热梗。
-9. 【合并流水账】多个连续场景承担相同功能时要主动合并，避免“依次询问角色A、角色B、角色C”的流水账；应概括调查结果，并突出这个结果对后续剧情的影响。段落关键节点用一帧画面感描写收束，而不是以“人物说”结尾。"""
+_NARRATIVE_STYLE = """1. 【素材边界】只讲述素材中实际出现的情节、角色、对话和画面信息，不添加素材之外的事实。可以在素材基础上合理推断，但用叙述语气自然带过（如"看起来""多半是""难道说"），不要写成下结论式的报告腔。
+2. 【玩家视角】站在游戏操作者的视角讲述，"我们"指代玩家扮演的主角（旅行者、漂泊者、管理员等），主角的调查、行动、发现、决定都从"我们"出发；其他角色用名字或称谓第三人称描述。不要每句都堆"我们"，在行动与转折处自然使用即可。
+3. 【对话取舍】对话不逐句复述：过场性、程序性的对话压缩成事件与结果即可；而身份揭露、重大反转、能立住角色个性的台词，保留直接引语让角色自己开口。引用宜短不宜长，爆点台词单独成句，前面留足铺垫。
+4. 【点名分层】一场戏里角色有主有次，名字只留给值得记住的人：本段的推动者、真相揭示者，以及反应本身就带着个人印记的角色。其余角色并入"众人""大家"等群体动作，不为凑数报名字；多人传递相同信息时，合并成一次调查或一个结论。
+5. 【句首呼吸】句子开头优先用场景、事件、情绪带入，避免连续多句以人名开头；人名出现后，后续描述尽量用"她""他""这位"承接，让听感松弛下来。
+6. 【推进与留白】每个叙事单元只推进一个核心事件，并交代它带来的结果、判断或新疑问。转折和悬念靠内容与铺垫本身制造，慎用"出乎意料的是""更奇怪的是"这类强调套话起手。
+7. 【配音节奏】句子保持短促自然、适合中文口播，每个条目通常一到三句。允许偶尔用一个长句铺陈蓄力、再用短句收束落点；通篇碎短句反而没有节奏。
+8. 【温度】解说人格冷静但有温度，情绪服务于剧情：在危险、误会、失去、身份揭露和反转处自然加强，平时收着。不使用网络热梗，也不用解说者自己的油滑吐槽盖过剧情；素材中角色本人的幽默与吐槽照实呈现，那是剧情的一部分。
+9. 【合并与收束】多个连续场景承担相同功能时主动合并，概括结果并点出其对后续剧情的影响；但角色各自的差异化反应是剧情内容，不在此列。段落关键节点用一帧画面感的描写收束，不要以"某某说"结尾。
+10. 【口播稿】这是给主播念的口播稿，不是文章。禁用破折号"——"引出同位语、解释、补充（如"想到丽莎——泡在图书馆的人"），改用逗号或拆成独立短句承接；冒号副标题、书名号套副标题等念出来会卡壳的句式同样避免。写完默念一遍，凡需要回气、断不开的，重写。"""
 
 # 风格示例（只学习表达方式，不复用示例中的人物、情节和措辞）
-_NARRATIVE_EXAMPLE = """“我们接连调查了几个人，却没有一个人听说过这座岛。连地图上都找不到它，事情开始变得不对劲。”
-“尸体没有伤口，也没有中毒迹象。既然没人进出过房间，那么凶手就只可能藏在我们之中。”"""
+_NARRATIVE_EXAMPLE = """“消息传开，营地里炸开了锅。有人收拾行李，有人骂骂咧咧，只有守夜的老猎人蹲在火堆旁，憋了半天冒出一句：‘我就说那晚的星星不对劲。’”
+“我们循着歌声走到崖边，才发现整座小镇的人都聚在那里，没有人说话。原来他们早就知道了，只是一直在等我们自己走到这一步。”"""
+
+# 模型适配层（config/models.yaml）：max_tokens、temperature、分片并发等按模型切换
+_PROFILE = models.profile_for(NARRATE_MODEL)
+NARRATE_MAX_TOKENS = _PROFILE.max_tokens_cap or 32768
+SEGMENT_MAX_TOKENS = _PROFILE.narration_segment_max_tokens or 8192
+FUSE_MAX_TOKENS = _PROFILE.narration_fuse_max_tokens or 16384
+# 提示词指纹：风格指令或示例变更后视为新版本，旧分片不续用
+PROMPT_FP = hashlib.sha256(
+    (_NARRATIVE_STYLE + _NARRATIVE_EXAMPLE).encode("utf-8")).hexdigest()[:12]
 
 
 def _build_prompt(timeline: dict, target_minutes: float, *,
@@ -107,7 +113,7 @@ def _build_prompt(timeline: dict, target_minutes: float, *,
     lines_block = chr(10).join(line_texts)
     shots_block = chr(10).join(shot_texts)
     scope = f"【{video_label}】" if video_label else ""
-    prompt = f"""你是一位剧情向短视频解说撰稿人。{scope}请根据下面的素材索引，撰写一段约 {target_minutes} 分钟（约 {target_chars} 字）的沉浸式故事复盘稿。
+    prompt = f"""你是一位剧情向短视频解说口播稿撰写人——稿子要被主播念出来，不是给人读的文章。{scope}请根据下面的素材索引，撰写一段约 {target_minutes} 分钟（约 {target_chars} 字）的沉浸式故事复盘稿。
 
 你的任务不是逐句整理角色对话，而是用连续、清晰、有画面感的旁白，带观众经历故事的发展、调查、冲突和反转。直接进入故事内容，不要添加“这段剧情很精彩”之类的开场评价。
 
@@ -245,7 +251,7 @@ def _build_fuse_prompt(segments: list[dict], target_minutes: float) -> str:
         blocks.append(f"【片段 {vid}】\n" + "\n".join(items))
     segments_block = "\n\n".join(blocks)
 
-    return f"""你是短视频解说稿总编。下面是同一故事的 {len(segments)} 个片段解说草稿（每个片段是时间上连续的一段剧情），请融合成一篇完整的沉浸式故事复盘稿（约 {target_minutes} 分钟，约 {target_chars} 字）。
+    return f"""你是短视频解说口播稿总编——产出要被主播念出来，不是给人读的文章。下面是同一故事的 {len(segments)} 个片段解说草稿（每个片段是时间上连续的一段剧情），请融合成一篇完整的沉浸式故事复盘稿（约 {target_minutes} 分钟，约 {target_chars} 字）。
 
 **必须严格遵循统一的讲述人风格**（分片草稿已按此风格撰写，融合不得漂移）：
 {_NARRATIVE_STYLE}
@@ -333,18 +339,42 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
         per = _split_timeline(timeline)
         seg_dir = output_dir / "narration_segments"
         seg_dir.mkdir(parents=True, exist_ok=True)
-        segments = []
+        segments: dict[str, dict] = {}
         per_minutes = target_minutes / max(len(videos), 1)
-        for vid in [v["video_id"] for v in videos]:
-            if vid not in per:
-                continue
+        target_vids = [v["video_id"] for v in videos if v["video_id"] in per]
+
+        def _segment_for(vid: str) -> tuple[str, dict]:
+            seg_path = seg_dir / f"{vid}.json"
+            if seg_path.exists():
+                try:
+                    existing = json.loads(seg_path.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = None
+                if existing and existing.get("_model") == NARRATE_MODEL and \
+                        existing.get("_prompt_fp") == PROMPT_FP and existing.get("narration"):
+                    return vid, existing
             seg = run_segment(per[vid], target_minutes=per_minutes)
-            (seg_dir / f"{vid}.json").write_text(
-                json.dumps(seg, ensure_ascii=False, indent=2), encoding="utf-8")
-            segments.append(seg)
-        narration = fuse(segments, target_minutes=target_minutes)
+            seg = {**seg, "_model": NARRATE_MODEL, "_prompt_fp": PROMPT_FP}
+            seg_path.write_text(json.dumps(seg, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+            return vid, seg
+
+        workers = _PROFILE.narration_segment_workers or 1
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = {ex.submit(_segment_for, vid): vid for vid in target_vids}
+                for fut in as_completed(futures):
+                    vid, seg = fut.result()
+                    segments[vid] = seg
+        else:
+            for vid in target_vids:
+                vid, seg = _segment_for(vid)
+                segments[vid] = seg
+
+        ordered_segments = [segments[vid] for vid in target_vids]
+        narration = fuse(ordered_segments, target_minutes=target_minutes)
         # 融合输出引用的是草稿句号，映射回台词行 id（确定性，不依赖 LLM 记性）
-        narration = _remap_line_refs(narration, segments)
+        narration = _remap_line_refs(narration, ordered_segments)
         used_mode = "segment"
     else:
         # 层1 压缩的单次调用（单视频）

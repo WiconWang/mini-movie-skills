@@ -15,10 +15,8 @@ class_table:
 title_template: "原神{version}-{chapter}"
 
 # 片头组合（阶段7 composition；src 相对项目根）
-# 素材未到位前留空，到位后填：
-#   - {type: intro_common, src: assets/intros/common.mp4}
-#   - {type: intro_special, src: assets/intros/gs-1.6.mp4}
-composition: []
+composition:
+  - {type: intro_special, src: assets/intros/genshin-1.6/1.6盛夏.mp4}
 
 # 画面变换（裁 LOGO/UID）：放大 110%，顶部对齐（水平居中、垂直贴顶），
 # 右下角 UID 水印区整行出画。offset_y=-36 使 crop 起点贴顶（(ih-720)/2-36=0）。
@@ -29,10 +27,15 @@ transform: {scale: 1.10, offset_x: 0, offset_y: -36}
 subtitle_mode: overlay
 
 # BGM 歌单（任务级人工指定，与剧情地区/氛围相符；顺序铺设、放完循环）
-# 当前为测试占位（用户提供的临时音乐），正式任务应人工挑选后写入 task.json
 bgm_playlist:
-  - "temp/陈致逸,HOYO-MiX - 希望的明日 Another Hopeful Tomorrow.mp3"
-  - "temp/HOYO-MiX - 熛烬的悼咏 Elogia Cinerosa.mp3"
+  - "assets/bgm/genshin-1.6/希望的航程.mp3"
+  - "assets/bgm/genshin-1.6/广袤的晴空.mp3"
+  - "assets/bgm/genshin-1.6/无虑无猜的岁月.mp3"
+  - "assets/bgm/genshin-1.6/水母之歌.mp3"
+  - "assets/bgm/genshin-1.6/海螺中的回音.mp3"
+  - "assets/bgm/genshin-1.6/海风细语.mp3"
+  - "assets/bgm/genshin-1.6/遥远的嘱托.mp3"
+  - "assets/bgm/genshin-1.6/闲适的陪伴.mp3"
 
 # TTS 引擎配置（任务可覆盖 task.json 的 tts 字段）
 # engine: say = macOS 本地占位（零依赖，机器音）

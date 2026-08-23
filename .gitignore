@@ -11,6 +11,9 @@ temp/
 *.sqlite
 *.sqlite-journal
 
+# 本机素材登记（真实登记文件不入 Git，模板为 catalog.example.yaml）
+catalog.yaml
+
 # ===== Python =====
 __pycache__/
 *.py[cod]
@@ -27,3 +30,4 @@ build/
 
 # ===== 本地记忆/内部状态（不提交）=====
 .workbuddy/
+:memory:.ses

@@ -57,6 +57,7 @@ def tts_edge(text: str, out_wav: Path, voice: str = EDGE_VOICE, rate: str = "+0%
     2. 连续快速请求会被限流（实测 5 句内必现）→ 全局最小间隔 1.5s/句。
     """
     import asyncio
+    import os
     import time
 
     import edge_tts
@@ -73,7 +74,8 @@ def tts_edge(text: str, out_wav: Path, voice: str = EDGE_VOICE, rate: str = "+0%
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             mp3 = Path(f.name)
         try:
-            asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(str(mp3)))
+            _proxy = os.environ.get("MMM_TTS_PROXY") or os.environ.get("https_proxy")
+            asyncio.run(edge_tts.Communicate(text, voice, rate=rate, proxy=_proxy or None).save(str(mp3)))
             _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mp3),
                   "-ar", "48000", "-ac", "1", str(out_wav)])
             return probe_duration(out_wav)
@@ -288,6 +290,12 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     seg_dir = work_dir / "render_segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
+
+    # 清理旧产物：防止跨版本 EDL/narration 的 TTS 和片段残留被误复用
+    for old in seg_dir.glob("tts_*.wav"):
+        old.unlink()
+    for old in seg_dir.glob("seg_*.mp4"):
+        old.unlink()
 
     seg_files = []
     seg_durations: list[float] = []   # 实测片段时长（含 TTS 冻结补齐），供字幕对齐成片时间轴

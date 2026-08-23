@@ -1,7 +1,7 @@
 """阶段6：选片段 + 生成 EDL + 分镜板。
 
 对解说稿每句，按 E→A 画面优先级从 timeline 中挑选源区间，
-输出 EDL（相对时间轴）和自包含分镜板 HTML（设计文档 §4 阶段6）。
+输出 EDL（相对时间轴）和本地轻量分镜板 HTML（设计文档 §4 阶段6）。
 
 MVP 约定：
 - 单视频任务，video_id 直接取自调用参数；
@@ -245,6 +245,8 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
                 continue   # 解说句完全被保留区间覆盖，丢弃（raw_insert 覆盖该段）
             local_start, local_end = adj
 
+        main_cand = next((k for k in all_cands if k["id"] == (shot_ids[0] if shot_ids else None)), None) \
+            or (all_cands[0] if all_cands else None)
         clip = {
             "type": "narration_clip",
             "narration_id": n["id"],
@@ -252,6 +254,7 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
             "video_id": vid,
             "start": local_start,
             "end": local_end,
+            "class": (main_cand or {}).get("class", "A"),
             "keep_audio": False,
             "shot_ids": shot_ids,
             "frames": _frame_paths(shot_ids[0], ws_of(vid)) if shot_ids else [],
@@ -260,6 +263,8 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
                     "shot_id": c["id"],
                     "video_id": c.get("video_id") or default_video_id,
                     "class": c.get("class", "A"),
+                    "start": c.get("local_start", c["start"]),
+                    "end": c.get("local_end", c["end"]),
                     "description": c.get("description") or "",
                     "motion": c.get("motion") or "low",
                     "ui_type": c.get("ui_type"),
@@ -338,11 +343,20 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
         json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
 
     storyboard_path = work_dir / "storyboard.html"
+    cfg = {}
+    cfg_path = work_dir / "task.json"
+    if cfg_path.exists():
+        cfg = json.loads(cfg_path.read_text())
+    tts_cfg = cfg.get("tts") or {}
+    tts_speed = float(tts_cfg.get("speed", 1.0))
     reviewer.build_storyboard(
         edl, storyboard_path,
         task_id=video_id,
         title=f"{video_id} 分镜板",
         frames_base=PROJECT_ROOT,
+        chars_per_sec=chars_per_sec,
+        tts_speed=tts_speed,
+        embed_frames=False,
     )
 
     return {

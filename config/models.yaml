@@ -1,0 +1,58 @@
+# 模型适配配置：OpenAI 兼容网关按模型名使用不同请求参数。
+# temperature: passthrough（跟随调用方）/ omit（不传）/ 数值（强制）
+# max_tokens_cap: 调用方请求上限，超过会被截断
+# timeout: 单次请求超时秒数
+# max_retries: 失败重试次数
+# retry_backoff: 重试退避基数（秒）
+# narration:
+#   segment_max_tokens / fuse_max_tokens: 层2 分片/融合输出预算
+#   segment_workers: 分片并发数（越大越快，越容易触发网关限流）
+default:
+  temperature: passthrough
+  max_tokens_cap: 32768
+  timeout: 300
+  max_retries: 3
+  retry_backoff: 5
+  narration:
+    segment_max_tokens: 8192
+    fuse_max_tokens: 16384
+    segment_workers: 1
+
+kimi-k3:
+  temperature: omit
+  max_tokens_cap: 65536
+  timeout: 480
+  max_retries: 3
+  retry_backoff: 5
+  narration:
+    segment_max_tokens: 32768
+    fuse_max_tokens: 65536
+    segment_workers: 2
+
+# OpenRouter 等网关带 provider 前缀的别名
+moonshotai/kimi-k3:
+  temperature: omit
+  max_tokens_cap: 65536
+  timeout: 480
+  max_retries: 3
+  retry_backoff: 5
+  narration:
+    segment_max_tokens: 32768
+    fuse_max_tokens: 65536
+    segment_workers: 2
+
+deepseek-v4-flash:
+  max_tokens_cap: 32768
+  timeout: 300
+  max_retries: 3
+  retry_backoff: 5
+  narration:
+    segment_max_tokens: 32768
+    fuse_max_tokens: 32768
+    segment_workers: 1
+
+mimo-v2.5:
+  max_tokens_cap: 4096
+  timeout: 300
+  max_retries: 2
+  retry_backoff: 3

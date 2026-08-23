@@ -18,7 +18,8 @@ brew install ffmpeg          # macOS；其他平台自行安装
 pip install -e .             # mmm CLI + 基础依赖（typer/pyyaml）
 pip install faster-whisper av "ctranslate2>=4.0,<5" "onnxruntime>=1.14,<2"   # ASR 用
 
-# 4. 重建台账（结构来自 db/schema.sql，数据来自 catalog.yaml）
+# 4. 重建台账（结构来自 db/schema.sql，数据来自本机 catalog.yaml，不入 Git）
+#    新机器首次：cp catalog.example.yaml catalog.yaml 再填入本机素材
 python3 -c "import sys; sys.path.insert(0,'src'); from mmm import db; db.init_db()"
 #   或安装后：mmm db-init && mmm catalog-import
 
@@ -31,7 +32,7 @@ python3 tests/test_align.py   # 对齐算法回归测试
 mmm status                    # 台账就绪
 ```
 
-**迁移检查单**：git 仓库 + ffmpeg + Python 依赖 + `mmm db-init` + 物料拷贝。其中物料是体积主体，建议整块硬盘/rsync 拷贝。
+**迁移检查单**：git 仓库 + ffmpeg + Python 依赖 + `mmm db-init` + 物料拷贝。其中物料是体积主体，建议整块硬盘/rsync 拷贝。`catalog.yaml` 是本机登记文件（gitignore），随 `pipeline.sqlite` 一起拷贝，或从 `catalog.example.yaml` 重建。
 
 ## 二、当前进度（截至 2026-08-17）
 
