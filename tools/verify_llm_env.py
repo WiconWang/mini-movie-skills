@@ -1,49 +1,64 @@
 #!/usr/bin/env python3
-"""验证 .env 中 LLM 配置是否可用。
+"""验证指定 LLM route 的配置与真实连通性。"""
 
-用法：
-    .venv/bin/python tools/verify_llm_env.py [模型名]
+from __future__ import annotations
 
-默认模型: deepseek-v4-flash（解说模型，与 stage_narrate.NARRATE_MODEL 一致）。
-验证内容：配置解析 → 真实 chat 请求 → 检查响应。
-
-注意：llm.chat() 带限速（0.5s）与指数退避，网络异常时可能耗时数十秒。
-"""
-
+import argparse
 import sys
-import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from mmm.llm import chat, load_endpoint  # noqa: E402
+
+
+def mask_key(value: str) -> str:
+    if len(value) <= 8:
+        return "***"
+    return f"{value[:4]}***{value[-4:]}"
+
 
 def main() -> None:
-    model = sys.argv[1] if len(sys.argv) > 1 else "deepseek-v4-flash"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("route", choices=["low", "high", "vision"])
+    parser.add_argument("--yes", action="store_true", help="确认发起真实付费请求")
+    args = parser.parse_args()
 
-    print(f"[1/3] 解析 .env 配置 ...")
-    from mmm import llm
-    base, key = llm._load_env()
-    print(f"      ✅ 读取成功: {base[:24]}... | key {key[:4]}***{key[-4:]}")
+    route = {
+        "low": "narrate_low",
+        "high": "narrate_high",
+        "vision": "vision",
+    }[args.route]
+    endpoint = load_endpoint(route)
+    print("[1/2] 配置解析")
+    print(f"      route={endpoint.route}")
+    print(f"      profile={endpoint.profile_id}")
+    print(f"      model={endpoint.model}")
+    print(f"      base_url={endpoint.base_url}")
+    print(f"      api_key={mask_key(endpoint.api_key)}")
+    print(f"      max_attempts={endpoint.profile.max_retries + 1}")
 
-    print(f"[2/3] 发送真实 chat 请求 (model={model}) ...")
-    t0 = time.time()
-    # 注意：max_tokens 要留足思考型模型的推理预算（reasoning 共享 token），
-    # 太小会 finish_reason=length 且 content 为空，造成"模型不可用"误报。
-    try:
-        reply = llm.chat(
-            model,
-            [{"role": "user", "content": "只回复两个字：成功"}],
-            max_tokens=512, temperature=0,
-        )
-    except Exception as e:
-        print(f"      ❌ 请求失败: {type(e).__name__}: {e}")
-        sys.exit(1)
+    if not args.yes:
+        print("[2/2] 未发起请求：追加 --yes 才执行真实付费验证")
+        return
 
-    print(f"[3/3] 响应耗时 {time.time()-t0:.1f}s")
-    reply = reply.strip()
-    print(f"      ✅ 模型回复: {reply[:80]}")
-    if reply:
-        print("      ✅ LLM 配置可用：URL / key / 模型 / 网络 全链路正常")
-    else:
-        print("      ⚠️ 请求成功但回复为空")
-        print("      可能原因：思考型模型推理耗尽了 max_tokens，或模型未放行。")
-        print("      建议用更大 max_tokens 重试，或换模型验证。")
+    print("[2/2] 发起真实请求")
+    result = chat(
+        endpoint,
+        [{"role": "user", "content": "只回复两个字：成功"}],
+        max_tokens=512,
+        temperature=0,
+        label=f"verify:{route}",
+    )
+    print(f"      attempt={result.attempt}")
+    print(f"      duration_ms={result.duration_ms}")
+    print(f"      http_status={result.http_status}")
+    print(f"      finish_reason={result.finish_reason}")
+    print(f"      usage={result.usage}")
+    print(f"      reply={result.content.strip()[:80]}")
+    print(f"      log={result.log_path}")
+
 
 if __name__ == "__main__":
     main()

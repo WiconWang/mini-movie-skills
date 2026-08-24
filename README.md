@@ -63,10 +63,13 @@ brew install ffmpeg                 # macOS Homebrew（可能不带 libass）
 #   arm64: https://ffmpeg.martin-riedl.de/download/macos/arm64/<版本>/ffmpeg.zip + ffprobe.zip
 #   解压到 temp/ffmpeg-static/ 下（ffmpeg + ffprobe），管线自动优先使用
 
-# 5. 配置 LLM 网关（.env，已被 gitignore）
+# 5. 配置 LLM 路由（.env，已被 gitignore）
 cp .env.example .env   # 若存在；否则手动创建
-# OPENCODE_ZEN_BASE_URL=<网关地址>
-# OPENCODE_ZEN_API_KEY=<你的 key>
+# 三条 route 均独立配置 PROFILE / MODEL / BASE_URL / API_KEY：
+# - MMM_NARRATE_LOW_*：阶段5 剧情节拍抽取
+# - MMM_NARRATE_HIGH_*：阶段5 终稿写作与融合
+# - MMM_VISION_*：阶段3 视觉理解
+# 供应商行为差异在 config/models.yaml 的 profiles 中声明
 
 # 6. 初始化台账 + 导入素材登记（catalog.yaml 是本机登记文件，不入 Git）
 cp catalog.example.yaml catalog.yaml   # 首次复制模板，再填入本机素材
@@ -98,6 +101,7 @@ mmm run shots gs-16-p1              # 镜头切分 + 黑白屏检测
 mmm run align --task hd-p1          # ASR + 台词对齐（多视频全局对齐）
 mmm run vision gs-16-p1             # 抽帧 + 视觉理解（耗时最长，逐镜头落盘）
 mmm run index gs-16-p1              # 时间轴索引
+mmm run narrate <task_id> --dry-run # 解说请求计划预检，不产生费用
 
 # 3. 阶段5：生成解说稿 →【闸口1：审阅 tasks/{id}/narration.md】
 mmm run narrate hd-p1 --target-minutes 15

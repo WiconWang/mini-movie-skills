@@ -1,130 +1,357 @@
-"""LLM 客户端（opencode zen 通道）。
-
-排障记录（2026-08-17）：403(1010) 是 Cloudflare WAF 的 UA 指纹拦截（Python-urllib
-被挡），非频率限制——换 curl UA 即放行，实测连发 6 次无限制。限速仅防突发并发。
-退避重试保留，应对偶发网络抖动与服务端 5xx。
-
-配置：.env 中 OPENCODE_ZEN_BASE_URL / OPENCODE_ZEN_API_KEY（.env 已 gitignore）。
-"""
+"""多供应商 LLM 客户端与调用账本。"""
 
 from __future__ import annotations
 
 import base64
+import hashlib
+import http.client
 import json
+import math
 import os
+import re
 import threading
 import time
-import http.client
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
-from .db import PROJECT_ROOT
 from . import models
+from .db import PROJECT_ROOT
+from .models import ModelProfile
+
+ENV_PREFIXES = {
+    "narrate_low": "MMM_NARRATE_LOW_",
+    "narrate_high": "MMM_NARRATE_HIGH_",
+    "vision": "MMM_VISION_",
+}
+
+LOG_PATH = PROJECT_ROOT / "logs" / "llm_calls.jsonl"
+_LOG_LOCK = threading.Lock()
+_RATE_LOCK = threading.Lock()
+_RATE_LAST: dict[tuple[str, str], float] = {}
 
 
 def _load_env_file() -> dict[str, str]:
-    """读取 .env 文件为 dict（不做环境注入）。键值均 strip，忽略注释行。"""
+    """读取 .env，不覆盖 shell 已提供的环境变量。"""
     env = PROJECT_ROOT / ".env"
-    vals: dict[str, str] = {}
-    if env.exists():
-        for line in env.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                vals[k.strip()] = v.strip()
-    return vals
+    values: dict[str, str] = {}
+    if not env.exists():
+        return values
+    for line in env.read_text(encoding="utf-8").splitlines():
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
 
 
-# 模块级：把 .env 注入 os.environ（setdefault 不覆盖 shell 已有的同名环境变量）。
-# 必须放在任何 os.environ.get 求值之前——stage 模块 import 时即可读到 .env 中的
-# 模型名等配置，无需等首次 LLM 调用。
-for _k, _v in _load_env_file().items():
-    os.environ.setdefault(_k, _v)
-del _k, _v
-
-# 默认限速：每次调用间隔最少秒数（防突发并发，非风控要求——实测 zen 网关不限频率）
-MIN_INTERVAL_SEC = float(os.environ.get("MMM_LLM_INTERVAL", "0.5"))
-
-_last_call = 0.0
-_call_lock = threading.Lock()
+for _key, _value in _load_env_file().items():
+    os.environ.setdefault(_key, _value)
+del _key, _value
 
 
-def _load_env() -> tuple[str, str]:
-    base = os.environ.get("OPENCODE_ZEN_BASE_URL", "")
-    key = os.environ.get("OPENCODE_ZEN_API_KEY", "")
-    if not base or not key:
-        raise RuntimeError("缺少 OPENCODE_ZEN_BASE_URL / OPENCODE_ZEN_API_KEY（.env 或环境变量）")
-    return base.rstrip("/"), key
+@dataclass(frozen=True)
+class LLMEndpoint:
+    route: str
+    profile_id: str
+    model: str
+    base_url: str
+    api_key: str
+    profile: ModelProfile
 
 
-def chat(model: str, messages: list[dict], *, max_tokens: int = 4096,
-         temperature: float | None = None) -> str:
-    """带限速与指数退避的 chat 调用，返回 content 文本。"""
-    global _last_call
-    base, key = _load_env()
-    prof = models.profile_for(model)
+@dataclass(frozen=True)
+class LLMCallResult:
+    content: str
+    route: str
+    profile_id: str
+    model: str
+    attempt: int
+    duration_ms: int
+    http_status: int | None
+    finish_reason: str | None
+    usage: dict | None
+    response_chars: int
+    response_preview: str
+    response_hash: str
+    log_path: str
 
-    payload: dict = {"model": model, "messages": messages,
-                     "max_tokens": prof.resolve_max_tokens(max_tokens)}
-    resolved_temp = prof.resolve_temperature(temperature)
-    if resolved_temp is not None:
-        payload["temperature"] = resolved_temp
-    if prof.request_extra:
-        payload.update(prof.request_extra)
 
-    wait_total = 0.0
-    max_retries = prof.max_retries
-    for attempt in range(max_retries + 1):
-        # 限速
-        with _call_lock:
-            gap = time.time() - _last_call
-            if gap < MIN_INTERVAL_SEC:
-                time.sleep(MIN_INTERVAL_SEC - gap)
-            _last_call = time.time()
+class LLMCallError(RuntimeError):
+    def __init__(self, message: str, *, route: str, attempt: int,
+                 log_path: str, http_status: int | None = None):
+        super().__init__(message)
+        self.route = route
+        self.attempt = attempt
+        self.log_path = log_path
+        self.http_status = http_status
 
-        req = urllib.request.Request(
-            f"{base}/chat/completions",
-            data=json.dumps(payload).encode(),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     # zen 网关 WAF 按 UA 指纹拦截（实测 Python-urllib 被 403(1010)，curl 放行）
-                     "User-Agent": "curl/8.7.1"},
+
+def _required_env(route: str, field: str) -> str:
+    prefix = ENV_PREFIXES[route]
+    name = f"{prefix}{field}"
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"缺少 {name}（.env 或环境变量）")
+    return value
+
+
+def load_endpoint(route: str) -> LLMEndpoint:
+    """按 route 读取独立 endpoint，并解析供应商适配策略。"""
+    if route not in ENV_PREFIXES:
+        raise RuntimeError(f"未知模型路由: {route}，支持: {sorted(ENV_PREFIXES)}")
+    profile_id = _required_env(route, "PROFILE")
+    model = _required_env(route, "MODEL")
+    base_url = models.validate_base_url(
+        _required_env(route, "BASE_URL"), f"{ENV_PREFIXES[route]}BASE_URL"
+    )
+    api_key = _required_env(route, "API_KEY")
+    profile = models.cached_route_profile(route, profile_id)
+    return LLMEndpoint(
+        route=route,
+        profile_id=profile_id,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        profile=profile,
+    )
+
+
+def _prompt_chars(messages: list[dict]) -> int:
+    return sum(len(str(m.get("content", ""))) for m in messages)
+
+
+def estimate_tokens(text: str) -> int:
+    """保守估算 prompt token，不引入 tokenizer 依赖。"""
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other = len(text) - cjk
+    return math.ceil(cjk + other * 0.75)
+
+
+def _request_hash(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _response_hash(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _safe_url(endpoint: LLMEndpoint) -> str:
+    parsed = urlparse(endpoint.base_url)
+    return f"{parsed.netloc}{parsed.path}".rstrip("/")
+
+
+def _redact(text: str, api_key: str) -> str:
+    return text.replace(api_key, "***")
+
+
+def _wait_rate_limit(endpoint: LLMEndpoint) -> None:
+    parsed = urlparse(endpoint.base_url)
+    key = (endpoint.profile_id, f"{parsed.scheme}://{parsed.netloc}")
+    interval = endpoint.profile.min_interval_seconds
+    if interval <= 0:
+        return
+    with _RATE_LOCK:
+        now = time.monotonic()
+        last = _RATE_LAST.get(key, 0.0)
+        wait = last + interval - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _RATE_LAST[key] = now
+
+
+def _write_log(record: dict) -> None:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+    with _LOG_LOCK:
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+
+def _base_log(endpoint: LLMEndpoint, payload: dict, attempt: int,
+              label: str | None) -> dict:
+    from datetime import datetime
+    messages = payload.get("messages", [])
+    prompt = "\n".join(str(m.get("content", "")) for m in messages)
+    return {
+        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "route": endpoint.route,
+        "profile": endpoint.profile_id,
+        "model": endpoint.model,
+        "base_url_host": _safe_url(endpoint),
+        "label": label,
+        "attempt": attempt + 1,
+        "max_retries": endpoint.profile.max_retries,
+        "prompt_chars": _prompt_chars(messages),
+        "estimated_prompt_tokens": estimate_tokens(prompt),
+        "max_tokens": payload.get(endpoint.profile.max_tokens_field),
+        "temperature_mode": endpoint.profile.temperature_mode,
+        "request_hash": _request_hash(payload),
+    }
+
+
+def _error_body(e: urllib.error.HTTPError, api_key: str) -> str:
+    try:
+        body = e.read().decode("utf-8", errors="replace")
+    except Exception:
+        body = ""
+    return _redact(body[:500], api_key)
+
+
+def chat(endpoint: LLMEndpoint, messages: list[dict], *, max_tokens: int,
+         temperature: float | None = None,
+         label: str | None = None) -> LLMCallResult:
+    """调用 OpenAI compatible chat 接口，并记录每次 HTTP attempt。"""
+    profile = endpoint.profile
+    payload: dict = {
+        "model": endpoint.model,
+        "messages": messages,
+        profile.max_tokens_field: profile.resolve_max_tokens(max_tokens),
+    }
+    resolved_temperature = profile.resolve_temperature(temperature)
+    if resolved_temperature is not None:
+        payload["temperature"] = resolved_temperature
+    if profile.request_extra:
+        payload.update(profile.request_extra)
+
+    max_attempts = profile.max_retries + 1
+    for attempt_index in range(max_attempts):
+        _wait_rate_limit(endpoint)
+        base_log = _base_log(endpoint, payload, attempt_index, label)
+        started = time.monotonic()
+        content = ""
+        http_status = None
+        finish_reason = None
+        usage = None
+        error_type = None
+        error_message = None
+        error_body = ""
+        will_retry = False
+
+        request = urllib.request.Request(
+            f"{endpoint.base_url}/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {endpoint.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "curl/8.7.1",
+            },
         )
+        retryable = False
         try:
-            with urllib.request.urlopen(req, timeout=prof.timeout) as resp:
-                r = json.load(resp)
-            return r["choices"][0]["message"]["content"] or ""
+            with urllib.request.urlopen(request, timeout=profile.timeout_seconds) as response:
+                http_status = response.status
+                raw_response = json.load(response)
+            choice = raw_response.get("choices", [{}])[0]
+            content = choice.get("message", {}).get("content") or ""
+            finish_reason = choice.get("finish_reason")
+            usage = raw_response.get("usage") if isinstance(raw_response.get("usage"), dict) else None
+            if not content.strip():
+                error_type = "EmptyContent"
+                error_message = "模型返回空内容"
         except urllib.error.HTTPError as e:
-            if e.code in (403, 429, 500, 502, 503) and attempt < max_retries:
-                backoff = min(prof.retry_backoff * (2 ** attempt), 60)
-                wait_total += backoff
-                time.sleep(backoff)
-                continue
-            raise
+            http_status = e.code
+            error_type = "HTTPError"
+            error_message = str(e)
+            error_body = _error_body(e, endpoint.api_key)
+            retryable = e.code in profile.retryable_status_codes
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError) as e:
+            error_type = "ResponseSchemaError"
+            error_message = f"{type(e).__name__}: {e}"
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            if attempt < max_retries:   # 网络抖动（SSL EOF/超时等）：短退避重试
-                backoff = min(prof.retry_backoff * (2 ** attempt), 60)
-                wait_total += backoff
-                time.sleep(backoff)
-                continue
-            raise
+            error_type = "NetworkError"
+            error_message = f"{type(e).__name__}: {e}"
+            retryable = profile.retry_network_errors
         except (http.client.IncompleteRead, http.client.HTTPException) as e:
-            # 代理/上游在传输中途断开（思考型模型响应慢时常见）
-            if attempt < max_retries:
-                backoff = min(prof.retry_backoff * (2 ** attempt), 60)
-                wait_total += backoff
-                time.sleep(backoff)
-                continue
-            raise
-    raise RuntimeError(f"LLM 调用失败（重试 {max_retries} 次，累计等待 {wait_total:.0f}s）")
+            error_type = "NetworkError"
+            error_message = f"{type(e).__name__}: {e}"
+            retryable = profile.retry_network_errors
+
+        attempts_left = attempt_index + 1 < max_attempts
+        will_retry = bool(retryable and attempts_left and error_type)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        record = {
+            **base_log,
+            "will_retry": will_retry,
+            "http_status": http_status,
+            "duration_ms": duration_ms,
+            "finish_reason": finish_reason,
+            "usage": usage,
+            "response_chars": len(content),
+            "response_preview": content[:500],
+            "response_hash": _response_hash(content),
+            "error_type": error_type,
+            "error_message": _redact(error_message or "", endpoint.api_key),
+            "error_body": _redact(error_body or "", endpoint.api_key),
+        }
+        _write_log(record)
+
+        if error_type is None:
+            return LLMCallResult(
+                content=content,
+                route=endpoint.route,
+                profile_id=endpoint.profile_id,
+                model=endpoint.model,
+                attempt=attempt_index + 1,
+                duration_ms=duration_ms,
+                http_status=http_status,
+                finish_reason=finish_reason,
+                usage=usage,
+                response_chars=len(content),
+                response_preview=content[:500],
+                response_hash=record["response_hash"],
+                log_path=str(LOG_PATH),
+            )
+
+        if will_retry:
+            backoff = min(
+                profile.retry_backoff_seconds * (2 ** attempt_index),
+                60,
+            )
+            time.sleep(backoff)
+            continue
+
+        detail = f"{error_type}: {error_message}"
+        if error_body:
+            detail += f"；响应片段: {error_body}"
+        raise LLMCallError(
+            f"LLM 调用失败 route={endpoint.route} attempt={attempt_index + 1}: {detail}；"
+            f"调用日志: {LOG_PATH}",
+            route=endpoint.route,
+            attempt=attempt_index + 1,
+            log_path=str(LOG_PATH),
+            http_status=http_status,
+        )
+
+    raise LLMCallError(
+        f"LLM 调用失败 route={endpoint.route}：重试循环异常退出；调用日志: {LOG_PATH}",
+        route=endpoint.route,
+        attempt=max_attempts,
+        log_path=str(LOG_PATH),
+    )
 
 
-def chat_with_image(model: str, text: str, image_path: Path | str, *,
-                    max_tokens: int = 4096) -> str:
-    """单图视觉调用（抽帧理解/自检回环用）。"""
-    p = Path(image_path)
-    b64 = base64.b64encode(p.read_bytes()).decode()
-    messages = [{"role": "user", "content": [
-        {"type": "text", "text": text},
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-    ]}]
-    return chat(model, messages, max_tokens=max_tokens)
+def chat_with_image(endpoint: LLMEndpoint, text: str,
+                    image_path: Path | str, *, max_tokens: int,
+                    label: str | None = None) -> LLMCallResult:
+    """调用视觉模型分析单张图片。"""
+    path = Path(image_path)
+    image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+        ],
+    }]
+    return chat(
+        endpoint,
+        messages,
+        max_tokens=max_tokens,
+        temperature=endpoint.profile.temperature,
+        label=label,
+    )

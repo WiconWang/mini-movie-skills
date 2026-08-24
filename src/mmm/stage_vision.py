@@ -17,10 +17,8 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from .llm import chat_with_image
+from .llm import LLMEndpoint, chat_with_image, load_endpoint
 
-# 视觉模型（.env 可覆盖：MMM_VISION_MODEL，未配置时回退默认）
-VISION_MODEL = os.environ.get("MMM_VISION_MODEL", "mimo-v2.5")
 MAX_WORKERS = int(os.environ.get("MMM_VISION_WORKERS", "6"))
 MIN_SHOT_DUR = float(os.environ.get("MMM_VISION_MIN_DUR", "2.0"))
 
@@ -71,31 +69,33 @@ def stitch_frames(frames: list[Path], out_path: Path) -> Path:
     return out_path
 
 
-def analyze_frame(image: Path, model: str = VISION_MODEL,
+def analyze_frame(image: Path, endpoint: LLMEndpoint,
                   prompt: str = PROMPT) -> dict:
-    """单图视觉理解，返回结构化标签（解析失败重试一次）。
+    """单图视觉理解；HTTP 瞬态重试由 route 策略统一处理。
 
-    注意：mimo-v2.5 是思考型模型，max_tokens 要给推理留足预算（实测 512 会空输出）。
+    注意：视觉模型可能是思考型模型，输出预算来自 vision route。
     """
-    for attempt in range(2):
-        raw = chat_with_image(model, prompt, image, max_tokens=1500)
-        try:
-            text = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            obj = json.loads(text)
-            # ui_type 容错：模型偶尔输出枚举外的值，归一化
-            ut = obj.get("ui_type")
-            if ut not in ("none", "dialogue", "gameplay"):
-                obj["ui_type"] = "gameplay" if ut in ("ui", "true", True) else "none"
-            return obj
-        except json.JSONDecodeError:
-            if attempt == 0:
-                continue
-            return {"_parse_error": True, "_raw": raw[:200]}
-    return {"_parse_error": True}
+    result = chat_with_image(
+        endpoint,
+        prompt,
+        image,
+        max_tokens=endpoint.profile.max_tokens,
+        label=f"shot:{image.stem}",
+    )
+    raw = result.content
+    try:
+        text = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        obj = json.loads(text)
+        ut = obj.get("ui_type")
+        if ut not in ("none", "dialogue", "gameplay"):
+            obj["ui_type"] = "gameplay" if ut in ("ui", "true", True) else "none"
+        return obj
+    except json.JSONDecodeError:
+        return {"_parse_error": True, "_raw": raw[:200]}
 
 
 def analyze_shot(video: Path, shot: dict, work_dir: Path,
-                 model: str = VISION_MODEL) -> dict:
+                 endpoint: LLMEndpoint) -> dict:
     """分析一个镜头：短镜头跳过；否则抽 3 帧拼图 → 1 次 VLM 调用。
 
     网关致命错误（4xx/5xx 重试耗尽、ffmpeg 抽帧失败等）不炸掉整批，
@@ -115,7 +115,7 @@ def analyze_shot(video: Path, shot: dict, work_dir: Path,
         frames = extract_frames(video, shot["start"], shot["end"], frames_dir)
         grid = frames_dir / "grid.jpg"
         stitch_frames(frames, grid)
-        r = analyze_frame(grid, model)
+        r = analyze_frame(grid, endpoint)
     except Exception as e:
         return {"shot_id": shot["id"], "_error": f"{type(e).__name__}: {e}"}
     if r.get("_parse_error"):
@@ -133,7 +133,7 @@ def analyze_shot(video: Path, shot: dict, work_dir: Path,
     }
 
 
-def run(video: Path, work_dir: Path, model: str = VISION_MODEL,
+def run(video: Path, work_dir: Path,
         max_workers: int = MAX_WORKERS) -> dict:
     """批量分析 workspace 下所有镜头 → shots_meta.json（拼图 + 并发）。
 
@@ -142,6 +142,7 @@ def run(video: Path, work_dir: Path, model: str = VISION_MODEL,
     """
     shots_path = work_dir / "shots.json"
     shots = json.loads(shots_path.read_text())["shots"]
+    endpoint = load_endpoint("vision")
     metas_dir = work_dir / "shots_meta"
     metas_dir.mkdir(parents=True, exist_ok=True)
 
@@ -166,7 +167,7 @@ def run(video: Path, work_dir: Path, model: str = VISION_MODEL,
 
     if pending:
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = {ex.submit(analyze_shot, video, s, work_dir, model): s for s in pending}
+            futs = {ex.submit(analyze_shot, video, s, work_dir, endpoint): s for s in pending}
             for fut in as_completed(futs):
                 s = futs[fut]
                 try:
@@ -187,7 +188,8 @@ def run(video: Path, work_dir: Path, model: str = VISION_MODEL,
                           f"复用 {reused}，跳过 {skipped}，失败 {len(errors)}）", flush=True)
 
     all_metas = [metas[s["id"]] for s in shots if s["id"] in metas]
-    out = {"model": model, "shots": shots, "metas": all_metas}
+    out = {"model": endpoint.model, "profile": endpoint.profile_id,
+           "shots": shots, "metas": all_metas}
     meta_path = work_dir / "shots_meta.json"
     meta_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"total": len(all_metas), "errors": errors,

@@ -3,6 +3,7 @@ materials/
 workspace/
 tasks/
 output/
+logs/
 assets/intros/
 assets/bgm/
 temp/

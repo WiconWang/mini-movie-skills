@@ -209,7 +209,6 @@ def run_align(
 def run_vision(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
-    model: str = typer.Option("mimo-v2.5", "--model", "-m", help="视觉模型"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段3：抽帧 + 视觉理解 → shots_meta.json。"""
@@ -227,7 +226,7 @@ def run_vision(
         typer.echo(f"✗ 视频不存在: {video}", err=True)
         raise typer.Exit(1)
 
-    summary = stage_vision.run(video, out_dir, model=model)
+    summary = stage_vision.run(video, out_dir)
     reused = summary.get("reused", 0)
     typer.echo(f"✓ {video.name}: 分析 {summary['total']} 个镜头"
                f"{f'（断点复用 {reused}）' if reused else ''}, 失败 {len(summary['errors'])}")
@@ -280,6 +279,7 @@ def run_narrate(
     target_minutes: float = typer.Option(15.0, "--target-minutes", "-t", help="目标正片时长（分钟）"),
     mode: str = typer.Option("auto", "--mode", help="auto/segment/oneshot（多视频合一篇用 segment）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="仅输出请求计划，不发起 LLM 请求"),
 ) -> None:
     """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。"""
     from . import stage_index, stage_narrate
@@ -289,9 +289,6 @@ def run_narrate(
         out_dir = timeline_path.parent
     elif task_id:
         out_dir = db.PROJECT_ROOT / "tasks" / task_id
-        if _skip_if_done(task_id, "narrate", out_dir / "narration.json",
-                         out_dir / "narration.md", force=force):
-            return
         timeline_path = out_dir / "global_timeline.json"
         if not timeline_path.exists():
             # 阶段4.5：多视频合流（单视频任务同样走此路径，结构统一）
@@ -306,8 +303,30 @@ def run_narrate(
         typer.echo(f"✗ timeline 不存在: {timeline_path}", err=True)
         raise typer.Exit(1)
 
+    if dry_run:
+        plan = stage_narrate.build_plan(
+            timeline_path, out_dir, target_minutes=target_minutes,
+            mode=mode, force=force,
+        )
+        info = stage_narrate.plan_summary(plan)
+        typer.echo(f"✓ narrate dry-run: mode={info['mode']}, "
+                   f"LOW segments={info['low_segments']}, cache hits={info['low_cache_hits']}, "
+                   f"LOW requests={info['low_requests']}, HIGH requests={info['high_requests']}")
+        typer.echo(f"  HIGH: profile={info['high_profile']}, model={info['high_model']}, "
+                   f"prompt≈{info['high_prompt_tokens_estimated']} tokens, "
+                   f"context={info['high_input_context_tokens']}, "
+                   f"margin={info['high_safety_margin_tokens']}, "
+                   f"max attempts={info['high_max_attempts']}")
+        if info["low_model"]:
+            typer.echo(f"  LOW: profile={info['low_profile']}, model={info['low_model']}, "
+                       f"max attempts={info['low_max_attempts']}")
+        typer.echo(f"  HIGH result cache: reusable={info['high_cache_reusable']} "
+                   f"({info['high_cache_reason']})")
+        typer.echo("  未发起任何 LLM 请求，未产生费用，未修改任务产物")
+        return
+
     summary = stage_narrate.run(timeline_path, out_dir, target_minutes=target_minutes,
-                                mode=mode)
+                                mode=mode, force=force)
     typer.echo(f"✓ 解说稿生成完成: {summary['sentences']} 句")
     typer.echo(f"  产物: {out_dir}/narration.json, narration.md")
     if task_id:

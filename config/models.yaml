@@ -1,58 +1,73 @@
-# 模型适配配置：OpenAI 兼容网关按模型名使用不同请求参数。
-# temperature: passthrough（跟随调用方）/ omit（不传）/ 数值（强制）
-# max_tokens_cap: 调用方请求上限，超过会被截断
-# timeout: 单次请求超时秒数
-# max_retries: 失败重试次数
-# retry_backoff: 重试退避基数（秒）
-# narration:
-#   segment_max_tokens / fuse_max_tokens: 层2 分片/融合输出预算
-#   segment_workers: 分片并发数（越大越快，越容易触发网关限流）
-default:
-  temperature: passthrough
-  max_tokens_cap: 32768
-  timeout: 300
-  max_retries: 3
-  retry_backoff: 5
-  narration:
-    segment_max_tokens: 8192
-    fuse_max_tokens: 16384
-    segment_workers: 1
+defaults:
+  protocol: openai_chat_completions
+  temperature_mode: passthrough
+  max_tokens_field: max_tokens
+  input_context_tokens: 131072
+  safety_margin_tokens: 8192
+  timeout_seconds: 300
+  retry_backoff_seconds: 5
+  min_interval_seconds: 0.5
+  capabilities:
+    - text
+  request_extra: {}
 
-kimi-k3:
-  temperature: omit
-  max_tokens_cap: 65536
-  timeout: 480
-  max_retries: 3
-  retry_backoff: 5
-  narration:
-    segment_max_tokens: 32768
-    fuse_max_tokens: 65536
-    segment_workers: 2
+profiles:
+  opencode_go:
+    protocol: openai_chat_completions
+    temperature_mode: passthrough
+    max_tokens_field: max_tokens
+    input_context_tokens: 1000000
+    safety_margin_tokens: 16384
+    timeout_seconds: 300
+    retry_backoff_seconds: 5
+    capabilities:
+      - text
+      - image
 
-# OpenRouter 等网关带 provider 前缀的别名
-moonshotai/kimi-k3:
-  temperature: omit
-  max_tokens_cap: 65536
-  timeout: 480
-  max_retries: 3
-  retry_backoff: 5
-  narration:
-    segment_max_tokens: 32768
-    fuse_max_tokens: 65536
-    segment_workers: 2
+  deepseek_official:
+    protocol: openai_chat_completions
+    temperature_mode: passthrough
+    max_tokens_field: max_tokens
+    input_context_tokens: 131072
+    safety_margin_tokens: 8192
+    timeout_seconds: 300
+    retry_backoff_seconds: 5
+    capabilities:
+      - text
 
-deepseek-v4-flash:
-  max_tokens_cap: 32768
-  timeout: 300
-  max_retries: 3
-  retry_backoff: 5
-  narration:
-    segment_max_tokens: 32768
-    fuse_max_tokens: 32768
-    segment_workers: 1
+  kimi_official:
+    protocol: openai_chat_completions
+    temperature_mode: omit
+    max_tokens_field: max_tokens
+    input_context_tokens: 262144
+    safety_margin_tokens: 16384
+    timeout_seconds: 480
+    retry_backoff_seconds: 5
+    capabilities:
+      - text
 
-mimo-v2.5:
-  max_tokens_cap: 4096
-  timeout: 300
-  max_retries: 2
-  retry_backoff: 3
+routes:
+  narrate_low:
+    defaults:
+      temperature: 0.6
+      max_tokens: 32768
+      narration_segment_workers: 1
+      max_retries: 1
+      retryable_status_codes: [429, 500, 502, 503]
+      retry_network_errors: true
+
+  narrate_high:
+    defaults:
+      temperature: 0.4
+      max_tokens: 65536
+      max_retries: 0
+      retryable_status_codes: []
+      retry_network_errors: false
+
+  vision:
+    defaults:
+      max_tokens: 1500
+      temperature: null
+      max_retries: 1
+      retryable_status_codes: [429, 500, 502, 503]
+      retry_network_errors: true
