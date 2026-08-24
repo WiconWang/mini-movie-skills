@@ -323,10 +323,27 @@ def _extract_json(text: str) -> dict:
         match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", source, re.DOTALL)
         if match:
             source = match.group(1)
-    value = json.loads(source)
+    try:
+        value = json.loads(source)
+    except json.JSONDecodeError:
+        value = json.loads(_repair_json(source))
     if not isinstance(value, dict):
         raise ValueError("LLM 输出必须是 JSON 对象")
     return value
+
+
+def _repair_json(source: str) -> str:
+    """修复 LLM 常见 JSON 语法错误：漏引号的属性名、单引号、尾逗号。"""
+    text = source
+    # 属性名缺少左引号：, key" → , "key"
+    text = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*("?\s*:)', r'\1"\2\3', text)
+    # 属性名完全无引号：, key: → , "key":
+    text = re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', text)
+    # 单引号替换为双引号
+    text = text.replace("'", '"')
+    # 尾逗号：,} 或 ,] → } 或 ]
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    return text
 
 
 def _failure_path(output_dir: Path, route: str, label: str) -> Path:

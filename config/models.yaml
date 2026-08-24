@@ -50,7 +50,7 @@ routes:
   narrate_low:
     defaults:
       temperature: 0.6
-      max_tokens: 32768
+      max_tokens: 65536
       narration_segment_workers: 1
       max_retries: 1
       retryable_status_codes: [429, 500, 502, 503]
@@ -59,7 +59,7 @@ routes:
   narrate_high:
     defaults:
       temperature: 0.4
-      max_tokens: 65536
+      max_tokens: 131072
       max_retries: 0
       retryable_status_codes: []
       retry_network_errors: false
