@@ -5,11 +5,15 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import re
 import shutil
 import time
 from pathlib import Path
+
+from .locks import LockBusy, exclusive_locks
 
 import typer
 
@@ -66,6 +70,46 @@ def _render_title(cfg: dict) -> str:
     return title or cfg.get("task_id", "render")
 
 
+def _pipeline_locked(resolve_keys):
+    """按命令参数推导互斥资源，避免并行任务覆盖共享产物。"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            bound = inspect.signature(func).bind(*args, **kwargs)
+            bound.apply_defaults()
+            keys = resolve_keys(**bound.arguments)
+            try:
+                with exclusive_locks(*keys):
+                    return func(*args, **kwargs)
+            except LockBusy as exc:
+                typer.echo(f"✗ {exc}", err=True)
+                raise typer.Exit(1)
+        return wrapper
+    return decorator
+
+
+def _align_lock_keys(task: str = "", video_id: str = "", path: str = "",
+                     script: str = "", **_) -> list[str]:
+    if task:
+        from .catalog import task_videos
+
+        return [f"task:{task}"] + [
+            f"video:{v['video_id']}" for v in task_videos(task)
+        ]
+    if path and script:
+        return [f"workspace:{Path(path).resolve()}"]
+    return [f"video:{video_id}"]
+
+
+def _index_lock_keys(task: str = "", video_id: str = "", path: str = "",
+                     **_) -> list[str]:
+    if task:
+        return [f"task:{task}", f"video:{video_id}"]
+    if path:
+        return [f"workspace:{Path(path).resolve()}"]
+    return [f"video:{video_id}"]
+
+
 @app.command("db-init")
 def db_init() -> None:
     """按 db/schema.sql 初始化台账数据库（幂等，迁移后第一步）。"""
@@ -95,6 +139,7 @@ def add(
 
 
 @app.command("task-create")
+@_pipeline_locked(lambda task_id="", **_: [f"task:{task_id}"])
 def task_create(
     task_id: str,
     videos: str = typer.Option(..., "--videos", help="逗号分隔的 video_id，顺序即剧情顺序"),
@@ -116,6 +161,8 @@ def task_create(
 
 
 @run_app.command("shots")
+@_pipeline_locked(lambda video_id="", path="", **_: [
+    f"workspace:{Path(path).resolve()}"] if path else [f"video:{video_id}"])
 def run_shots(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
@@ -147,6 +194,7 @@ def run_shots(
 
 
 @run_app.command("align")
+@_pipeline_locked(_align_lock_keys)
 def run_align(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用）"),
@@ -163,7 +211,7 @@ def run_align(
 
         task_dir = db.PROJECT_ROOT / "tasks" / task
         anchors = [task_dir / "align_global.json"] + [
-            db.PROJECT_ROOT / "workspace" / v["video_id"] / "lines.json"
+            task_dir / "workspace" / v["video_id"] / "lines.json"
             for v in catalog.task_videos(task)]
         if _skip_if_done(task, "align", *anchors, force=force):
             return
@@ -206,6 +254,8 @@ def run_align(
 
 
 @run_app.command("vision")
+@_pipeline_locked(lambda video_id="", path="", **_: [
+    f"workspace:{Path(path).resolve()}"] if path else [f"video:{video_id}"])
 def run_vision(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
@@ -238,13 +288,47 @@ def run_vision(
 
 
 @run_app.command("index")
+@_pipeline_locked(_index_lock_keys)
 def run_index(
     video_id: str = typer.Argument(""),
+    task: str = typer.Option("", "--task", help="任务模式：生成任务级 timeline，避免共享视频冲突"),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段4：合并时间轴索引 → timeline.json。"""
     from . import stage_index
+
+    if task:
+        from . import catalog
+
+        videos = {v["video_id"] for v in catalog.task_videos(task)}
+        if video_id not in videos:
+            typer.echo(f"✗ 任务 {task} 未关联视频: {video_id}", err=True)
+            raise typer.Exit(1)
+        shared_work = db.PROJECT_ROOT / "workspace" / video_id
+        out_dir = db.PROJECT_ROOT / "tasks" / task / "workspace" / video_id
+        lines_path = out_dir / "lines.json"
+        if not lines_path.exists():
+            typer.echo(f"✗ 缺少任务级对齐结果: {lines_path}（先跑 mmm run align --task {task}）", err=True)
+            raise typer.Exit(1)
+        if _skip_if_done(f"{task}:{video_id}", "index", out_dir / "timeline.json", force=force):
+            return
+        if not (shared_work / "shots.json").exists():
+            typer.echo(f"✗ workspace 不存在或缺少 shots.json: {shared_work}", err=True)
+            raise typer.Exit(1)
+        stats = stage_index.run(shared_work, lines_path=lines_path,
+                                output_path=out_dir / "timeline.json")
+        by_class = stats["by_class"]
+        typer.echo(f"✓ 任务时间轴索引已生成: {stats['shots']} 镜头, "
+                   f"E={by_class['E']} D={by_class['D']} C={by_class['C']} B={by_class['B']} A={by_class['A']}")
+        typer.echo(f"  产物: {out_dir}/timeline.json")
+        if (shared_work / "shots_meta.json").exists():
+            db.record_job(f"{task}:{video_id}", "index", "done",
+                          f"{stats['shots']} 镜头, 分级 {by_class}")
+        else:
+            typer.echo("⚠ 缺少 shots_meta.json（阶段3 未跑），分级退化为全 A；"
+                       "不标记完成，vision 完成后请重跑 index")
+        return
 
     if path:
         out_dir = Path(path)
@@ -273,6 +357,9 @@ def run_index(
 
 
 @run_app.command("narrate")
+@_pipeline_locked(lambda task_id="", timeline="", **_: [
+    f"workspace:{Path(timeline).resolve()}"] if timeline else (
+    [f"task:{task_id}"] if task_id else []))
 def run_narrate(
     task_id: str = typer.Argument(""),
     timeline: str = typer.Option("", "--timeline", help="直接给 timeline.json 路径（冒烟测试用，跳过 task_id）"),
@@ -335,6 +422,9 @@ def run_narrate(
 
 
 @run_app.command("select")
+@_pipeline_locked(lambda video_id="", task="", path="", **_: [
+    f"task:{task}"] if task else (
+    [f"workspace:{Path(path).resolve()}"] if path else [f"video:{video_id}"]))
 def run_select(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
@@ -373,6 +463,10 @@ def run_select(
 
 
 @run_app.command("render")
+@_pipeline_locked(lambda video_id="", task="", path="", video="", **_: [
+    f"task:{task}"] if task else (
+    [f"workspace:{Path(path).resolve()}"] if path and video else (
+    [f"video:{video_id}"] if video_id else [])))
 def run_render(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
@@ -446,6 +540,7 @@ def run_render(
 
 
 @app.command("export-jianying")
+@_pipeline_locked(lambda task_id="", **_: [f"task:{task_id}"])
 def export_jianying(
     task_id: str,
     drafts_dir: str = typer.Option("", "--drafts-dir", help="剪映草稿根目录（缺省自动探测 ~/Movies/JianyingPro Drafts）"),

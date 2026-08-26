@@ -94,9 +94,12 @@ def _video_duration(video: Path) -> float:
 def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
     """多视频任务全局对齐（设计文档 §4 阶段2 多视频任务的对齐）。
 
-    流程：逐视频确保 ASR（asr.json 断点复用）→ 按 seq 以 offset 拼成全局词流
-    → 任务级完整台词一次对齐 → 按 offset 拆回各视频 lines.json（本地时间）。
+    流程：逐视频确保共享 ASR（asr.json 断点复用）→ 按 seq 以 offset 拼成全局词流
+    → 任务级完整台词一次对齐 → 按 offset 写入任务目录 lines.json（本地时间）。
     台词来源：task.json 的 script_path（任务级整份台词），缺省取首个视频的台词。
+
+    lines.json 属于“素材 × 任务台词”的结果，不写入共享视频工作区，
+    避免多个任务引用同一源视频时互相覆盖。
     """
     from .catalog import task_videos
     from .db import PROJECT_ROOT
@@ -107,6 +110,7 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
         raise KeyError(f"任务无关联素材: {task_id}")
 
     task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_workspace = task_dir / "workspace"
     task_cfg = {}
     cfg_path = task_dir / "task.json"
     if cfg_path.exists():
@@ -153,9 +157,12 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
         line["local_end"] = round(line["end"] - off, 2)
         per_video[vid].append({**line, "start": line["local_start"], "end": line["local_end"]})
 
+    # 对齐结果变化后，旧的任务级时间轴和全局时间轴不再可信。
+    (task_dir / "global_timeline.json").unlink(missing_ok=True)
     for vid, lines in per_video.items():
-        work = PROJECT_ROOT / "workspace" / vid
+        work = task_workspace / vid
         work.mkdir(parents=True, exist_ok=True)
+        (work / "timeline.json").unlink(missing_ok=True)
         matched = sum(1 for l in lines if l["align"] == "matched")
         interp = sum(1 for l in lines if l["align"] == "interpolated")
         voiced = sum(1 for l in lines if l["align"] != "unvoiced")
@@ -174,6 +181,6 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
 
     report = dict(result["report"])
     report["per_video"] = {vid: json.loads(
-        (PROJECT_ROOT / "workspace" / vid / "lines.json").read_text())["report"]
+        (task_workspace / vid / "lines.json").read_text())["report"]
         for vid, _, _ in offsets}
     return report

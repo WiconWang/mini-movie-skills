@@ -11,6 +11,11 @@ temp/
 # ===== 数据库（结构由 db/schema.sql 重建，数据由 catalog.yaml 导入 + 管线运行产生）=====
 *.sqlite
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# 并发护栏的跨进程锁文件
+.locks/
 
 # 本机素材登记（真实登记文件不入 Git，模板为 catalog.example.yaml）
 catalog.yaml

@@ -13,11 +13,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "pipeline.sqlite"
 SCHEMA_PATH = PROJECT_ROOT / "db" / "schema.sql"
 
+_INITIALIZED: set[Path] = set()
+
 
 def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    """按 schema.sql 建库（幂等），返回连接。"""
-    conn = sqlite3.connect(db_path)
-    conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    """按 schema.sql 建库（幂等），返回启用 WAL 并发设置的连接。"""
+    conn = sqlite3.connect(db_path, timeout=30)
+    # 每个连接都要设置；WAL 只在首次初始化时切换，减少并发写锁竞争。
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    if db_path not in _INITIALIZED:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        _INITIALIZED.add(db_path)
     conn.commit()
     return conn
 

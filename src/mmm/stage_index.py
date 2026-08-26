@@ -98,18 +98,22 @@ def build_timeline(shots: list[dict], fades: list[dict], lines: list[dict],
             "stats": {"shots": len(out_shots), "by_class": counts}}
 
 
-def run(work_dir: Path) -> dict:
-    """从 workspace 目录读取四路产物，写出 timeline.json。"""
+def run(work_dir: Path, *, lines_path: Path | None = None,
+        output_path: Path | None = None) -> dict:
+    """从 workspace 读取镜头信号，并支持任务级台词/时间轴路径。"""
     shots = json.loads((work_dir / "shots.json").read_text())["shots"]
     fades = json.loads((work_dir / "fades.json").read_text())["fades"]
-    lines = json.loads((work_dir / "lines.json").read_text())["lines"]
+    lines_file = lines_path or work_dir / "lines.json"
+    lines = json.loads(lines_file.read_text())["lines"]
     meta_path = work_dir / "shots_meta.json"
     metas_raw = json.loads(meta_path.read_text()) if meta_path.exists() else []
     # shots_meta.json 兼容两种形态：纯 list，或 {metas: [...]}（stage_vision.run 产出）
     metas = metas_raw["metas"] if isinstance(metas_raw, dict) else metas_raw
 
     timeline = build_timeline(shots, fades, lines, metas)
-    (work_dir / "timeline.json").write_text(
+    out_file = output_path or work_dir / "timeline.json"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(
         json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8")
     return timeline["stats"]
 
@@ -133,9 +137,17 @@ def build_global(task_id: str) -> dict:
     m_fades: list[dict] = []
     videos_meta = []
     offset = 0.0
+    task_dir = PROJECT_ROOT / "tasks" / task_id
     for v in videos:
         vid = v["video_id"]
-        tl_path = PROJECT_ROOT / "workspace" / vid / "timeline.json"
+        shared_work = PROJECT_ROOT / "workspace" / vid
+        task_work = task_dir / "workspace" / vid
+        task_lines = task_work / "lines.json"
+        tl_path = task_work / "timeline.json"
+        if task_lines.exists() and not tl_path.exists():
+            run(shared_work, lines_path=task_lines, output_path=tl_path)
+        elif not tl_path.exists():
+            tl_path = shared_work / "timeline.json"
         tl = json.loads(tl_path.read_text(encoding="utf-8"))
         dur = max((s["end"] for s in tl["shots"]), default=0.0)
         for s in tl["shots"]:
