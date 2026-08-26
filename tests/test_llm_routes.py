@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import sys
@@ -210,6 +211,38 @@ class NarrateReferenceTests(unittest.TestCase):
         )
         self.assertEqual(output[0]["related_beat_ids"][0]["beat_id"], 1)
 
+    def test_high_fuse_evidence_omits_line_refs_and_extra_quotes(self):
+        segments = [{
+            "segment_id": "v1::chunk_001",
+            "beats": [{
+                "id": 1,
+                "summary": "核心事件",
+                "characters": ["A"],
+                "cause": "原因",
+                "effect": "结果",
+                "key_quotes": [
+                    {"speaker": "A", "text": "第一句", "line_id": 1},
+                    {"speaker": "A", "text": "第二句", "line_id": 2},
+                ],
+                "related_line_ids": [1, 2],
+                "importance": "core",
+                "confidence": "high",
+            }],
+        }]
+
+        prompt = stage_narrate._build_high_fuse_prompt(segments, target_minutes=1)
+
+        self.assertIn("v1::chunk_001", prompt)
+        self.assertNotIn("related_line_ids", prompt)
+        self.assertIn("第一句", prompt)
+        self.assertNotIn("第二句", prompt)
+        legacy_material = (
+            stage_narrate._HIGH_NARRATION_STYLE
+            + stage_narrate._NARRATIVE_EXAMPLE
+        )
+        legacy_fingerprint = hashlib.sha256(legacy_material.encode("utf-8")).hexdigest()[:12]
+        self.assertNotEqual(stage_narrate.HIGH_PROMPT_FP, legacy_fingerprint)
+
 
 class NarratePipelineTests(unittest.TestCase):
     def test_human_edited_final_is_protected_without_force(self):
@@ -314,6 +347,7 @@ class NarratePipelineTests(unittest.TestCase):
             else:
                 self.assertIn("v1::chunk_001", prompt)
                 self.assertIn("v2::chunk_001", prompt)
+                self.assertNotIn("related_line_ids", prompt)
                 payload = {
                     "narration": [{
                         "id": 1,

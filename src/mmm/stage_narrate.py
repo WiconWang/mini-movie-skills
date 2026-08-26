@@ -33,6 +33,10 @@ _HIGH_NARRATION_STYLE = """1. 【素材边界】只讲述证据中出现的事�
 9. 【合并收束】相同功能的连续事件主动合并，概括结果并点出影响；关键节点用画面感描写收束，不以“某某说”结尾。
 10. 【口播稿】这是给主播念的稿子。禁用破折号引出解释或同位语；冒号副标题、书名号套副标题等影响换气的句式避免。"""
 
+_HIGH_EVIDENCE_CONTRACT = (
+    "beat_evidence_v2:omit_related_line_ids;keep_first_key_quote"
+)
+
 _NARRATIVE_EXAMPLE = """“消息传开，营地里炸开了锅。有人收拾行李，有人骂骂咧咧，只有守夜的老猎人蹲在火堆旁，憋了半天冒出一句：‘我就说那晚的星星不对劲。’”
 “我们循着歌声走到崖边，才发现整座小镇的人都聚在那里，没有人说话。原来他们早就知道了，只是一直在等我们自己走到这一步。”"""
 
@@ -56,7 +60,7 @@ LOW_PROMPT_FP = hashlib.sha256(
     (_LOW_EXTRACTION_INSTRUCTIONS + _LOW_OUTPUT_SCHEMA_HINT).encode("utf-8")
 ).hexdigest()[:12]
 HIGH_PROMPT_FP = hashlib.sha256(
-    (_HIGH_NARRATION_STYLE + _NARRATIVE_EXAMPLE).encode("utf-8")
+    (_HIGH_NARRATION_STYLE + _NARRATIVE_EXAMPLE + _HIGH_EVIDENCE_CONTRACT).encode("utf-8")
 ).hexdigest()[:12]
 
 
@@ -182,13 +186,26 @@ def _build_high_direct_prompt(timeline: dict, target_minutes: float) -> str:
 {{"narration":[{{"id":1,"text":"解说句","related_line_ids":[1,2]}}]}}"""
 
 
+def _high_evidence_beat(beat: dict) -> dict:
+    """HIGH 只选节拍；台词行引用由程序从 LOW 分片缓存回填。"""
+    evidence = {
+        key: value for key, value in beat.items()
+        if key != "related_line_ids"
+    }
+    if "key_quotes" in evidence:
+        evidence["key_quotes"] = (evidence.get("key_quotes") or [])[:1]
+    return evidence
+
+
 def _build_high_fuse_prompt(segments: list[dict], target_minutes: float) -> str:
     target_chars = int(target_minutes * CHARS_PER_MINUTE)
     blocks = []
     for segment in segments:
         beats = []
         for beat in segment.get("beats", []):
-            beats.append(json.dumps(beat, ensure_ascii=False, sort_keys=True))
+            beats.append(json.dumps(
+                _high_evidence_beat(beat), ensure_ascii=False, sort_keys=True
+            ))
         blocks.append(f"【segment_id={segment['segment_id']}】\n" + "\n".join(beats))
     evidence = "\n\n".join(blocks)
     return f"""你是短视频解说口播稿总编。下面是同一故事按时间顺序整理的剧情节拍证据，请融合成约 {target_minutes} 分钟（约 {target_chars} 字）的完整口播稿。
