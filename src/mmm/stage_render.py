@@ -93,6 +93,14 @@ def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
     按系列/任务配置的 tts.engine 分发：
     - say  ：macOS 本地占位（零依赖，机器音）
     - edge ：edge-tts 在线免费（验证级音质，需联网）
+
+    规划说明（尚未接入正式实现）：
+    - dry/smoke 阶段继续用现有 say/edge，避免正式云服务费用影响流程验证。
+    - 正式阶段计划接 MiniMax speech-2.8-hd：POST /v1/t2a_v2。
+      候选 voice_id 见 config/series/{series}.yaml 的 TTS 注释，待试听后确定。
+    - MiniMax 不是 SSML：停顿用文本内 <#秒#>，语气词如 (laughs)/(breath)/(sighs)
+      直接嵌入文本；emotion 放入 voice_setting.emotion，不由这些小括号标签控制。
+
     云 TTS（火山/豆包）选型后在此加分支，调用方零改动。
     """
     cfg = tts_cfg or {}
