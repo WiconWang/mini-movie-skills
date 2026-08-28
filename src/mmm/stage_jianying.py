@@ -4,7 +4,7 @@
 - 视频轨：按 EDL 顺序铺设，解说片段静音，raw_insert 保留原声；
   TTS 超长时**视频段仍按源区间 1:1 放置**（不搞变速），空隙留给人工拉帧——
   精修通道的原则是「摆好素材、暴露问题」，不替人做决定
-- 解说轨：TTS 占位音（复用/补生成 render_segments/tts_XXX.wav，与导出器A 共享）
+- 解说轨：复用 render_segments/tts_XXX.wav；缺失时直接失败，不隐式触发付费 TTS
 - 字幕轨：import_srt 导入（按成片时间轴生成，见 stage_subtitle）
 - BGM 轨：playlist 顺序铺满，音量预设低位；ducking 留给人工（剪映里人比滤镜调得好）
 
@@ -93,9 +93,14 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
             "）；请安装剪映专业版或用 --drafts-dir 指定")
     drafts_dir.mkdir(parents=True, exist_ok=True)
 
-    # TTS 与导出器A 同目录同命名，已存在直接复用（断点续跑）
+    # 任务模式只复用已切分 TTS；剪映导出不隐式触发付费合成。
     seg_dir = work_dir / "render_segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
+    prepared_tts: dict[int, Path] | None = None
+    if task_id:
+        from .tts import runtime as tts_runtime
+
+        prepared_tts = tts_runtime.load_render_artifacts(work_dir, tts_cfg)
 
     folder = draft.DraftFolder(str(drafts_dir))
     script = folder.create_draft(draft_name, out_w, out_h, fps=out_fps, allow_replace=True)
@@ -113,8 +118,12 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
         a_dur = 0.0
         if not clip.get("keep_audio"):
             wav = seg_dir / f"tts_{i:03d}.wav"
-            a_dur = (probe_duration(wav) if wav.exists()
-                     else stage_render.synthesize(clip["text"], wav, tts_cfg))
+            if prepared_tts is not None:
+                wav = prepared_tts[i]
+                a_dur = probe_duration(wav)
+            else:
+                a_dur = (probe_duration(wav) if wav.exists()
+                         else stage_render.synthesize(clip["text"], wav, tts_cfg))
         dur = max(v_dur, a_dur, 0.5)
         seg_durations.append(dur)
 

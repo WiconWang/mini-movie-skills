@@ -37,14 +37,26 @@ bgm_playlist:
   - "assets/bgm/genshin-1.6/遥远的嘱托.mp3"
   - "assets/bgm/genshin-1.6/闲适的陪伴.mp3"
 
-# TTS 引擎配置（任务可覆盖 task.json 的 tts 字段）
-# engine: say = macOS 本地占位（零依赖，机器音）
-#         edge = edge-tts 在线免费（验证级音质，需联网，无 key）
-# 云 TTS（火山/豆包）选型后在 stage_render.synthesize 加分支，调用方零改动
+# TTS 统一适配层配置（任务可覆盖 task.json 的 tts 字段）
+# dry 固定走 Edge TTS；prod 默认 MiniMax，用户可替换 provider。
+# 启用 prod 前必须在 task.json prod.voice_id 显式配置账户可用音色。
 tts:
-  engine: edge
-  voice: zh-CN-XiaoyiNeural   # 女声活泼，解说调性；备选 zh-CN-XiaoxiaoNeural / YunxiNeural
-  speed: 1.1
+  profile: dry
+  strategy: full_then_split
+  maximum_pause_ms: 2000
+  dry:
+    provider: edge
+    model: edge-neural
+    voice: zh-CN-XiaoyiNeural
+    speed: 1.1
+  prod:
+    provider: minimax
+    model: speech-2.8-hd
+    speed: 1.1
+    emotion: calm
+    sample_rate: 44100
+    format: wav
+    channel: 1
 
 # 目标正片时长（分钟，不含 raw_insert）
 target_minutes: 15

@@ -71,3 +71,11 @@ routes:
       max_retries: 1
       retryable_status_codes: [429, 500, 502, 503]
       retry_network_errors: true
+
+  tts_plan:
+    defaults:
+      max_tokens: 16384
+      temperature: 0.2
+      max_retries: 0
+      retryable_status_codes: []
+      retry_network_errors: false

@@ -11,7 +11,7 @@ import yaml
 from .db import PROJECT_ROOT
 
 MODELS_YAML = PROJECT_ROOT / "config" / "models.yaml"
-ROUTES = ("narrate_low", "narrate_high", "vision")
+ROUTES = ("narrate_low", "narrate_high", "vision", "tts_plan")
 PROTOCOLS = {"openai_chat_completions"}
 MAX_TOKENS_FIELDS = {"max_tokens", "max_completion_tokens"}
 REQUEST_RESERVED_FIELDS = {

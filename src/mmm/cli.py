@@ -462,6 +462,138 @@ def run_select(
     typer.echo("  ⏸ 闸口2：请审阅 storyboard.html，确认或调整后再继续阶段7")
 
 
+@run_app.command("tts-plan")
+@_pipeline_locked(lambda task_id="", **_: [f"task:{task_id}"])
+def run_tts_plan(
+    task_id: str = typer.Option("", "--task"),
+    profile: str = typer.Option("", "--profile", help="dry/prod；缺省用 task.json tts.profile"),
+    force: bool = typer.Option(False, "--force", help="重新生成计划并使旧审批失效"),
+) -> None:
+    """阶段6.5：LLM 生成 TTS 表演计划 → 闸口3，等待用户确认。"""
+    from .tts import runtime as tts_runtime
+    from .llm import LLMCallError
+
+    if not task_id:
+        typer.echo("✗ 必须提供 --task", err=True)
+        raise typer.Exit(1)
+
+    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    if _skip_if_done(
+        task_id, "tts_plan", task_dir / tts_runtime.PLAN_PATH_NAME,
+        task_dir / tts_runtime.HTML_PATH_NAME, force=force,
+    ):
+        return
+    plan_path = task_dir / tts_runtime.PLAN_PATH_NAME
+    html_path = task_dir / tts_runtime.HTML_PATH_NAME
+    if not force and plan_path.exists() and html_path.exists():
+        try:
+            existing = tts_runtime.load_plan_document(task_dir)
+        except (FileNotFoundError, ValueError) as exc:
+            typer.echo(f"⚠ 现有 TTS 计划无效：{exc}；使用 --force 重新生成", err=True)
+            raise typer.Exit(1)
+        typer.echo(f"⏭ TTS 计划已存在，未重新调用 LLM: {existing['plan_sha256']}")
+        typer.echo("  如 EDL 或配置已变化，请加 --force 重新生成；旧审批会失效")
+        return
+    if not (task_dir / "edl.json").exists():
+        typer.echo(f"✗ 缺少 EDL: {task_dir / 'edl.json'}（先完成闸口2）", err=True)
+        raise typer.Exit(1)
+
+    cfg = json.loads((task_dir / "task.json").read_text())
+    try:
+        summary = tts_runtime.create_tts_plan(
+            task_dir, cfg.get("tts") or {}, profile=profile or None, force=force
+        )
+    except (ValueError, FileNotFoundError, LLMCallError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1)
+
+    db.record_job(
+        task_id, "tts_plan", "gate_waiting",
+        f"等待闸口3；plan={summary['plan_sha256']}",
+    )
+    typer.echo(f"✓ TTS 表演计划已生成: {summary['segments']} 段")
+    typer.echo(f"  profile/provider/model: {summary['profile']} / "
+               f"{summary['provider']} / {summary['model']}")
+    cost = summary["cost_estimate"]
+    typer.echo(f"  预估计费字符: {cost.get('billing_characters', 0)}；"
+               f"预估 TTS 费用: {cost.get('amount', 0):.4f} {cost.get('currency', 'CNY')}")
+    typer.echo(f"  产物: {task_dir / tts_runtime.HTML_PATH_NAME}")
+    typer.echo(f"  plan_sha256: {summary['plan_sha256']}")
+    if summary["profile"] == "prod":
+        typer.echo("  ⚠ 确认后将调用付费 TTS；失败重试可能再次计费")
+    else:
+        typer.echo("  ⚠ 确认后将调用 Edge TTS；TTS 免费，但 LLM 计划调用可能已产生费用")
+    typer.echo("  ⏸ 闸口3：确认无误后执行 mmm tts-approve --task "
+               f"{task_id} --plan-sha256 {summary['plan_sha256']}")
+
+
+@app.command("tts-approve")
+@_pipeline_locked(lambda task_id="", **_: [f"task:{task_id}"])
+def tts_approve(
+    task_id: str = typer.Option("", "--task"),
+    plan_sha256: str = typer.Option(..., "--plan-sha256"),
+) -> None:
+    """记录用户对 TTS 表演计划的显式审批；不发起合成。"""
+    from .tts import runtime as tts_runtime
+
+    if not task_id:
+        typer.echo("✗ 必须提供 --task", err=True)
+        raise typer.Exit(1)
+
+    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    try:
+        approval = tts_runtime.approve_plan(task_dir, plan_sha256)
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1)
+    db.record_job(
+        task_id, "tts_plan", "approved",
+        f"用户已确认 plan={approval['plan_sha256']}",
+    )
+    typer.echo(f"✓ TTS 计划已确认: {approval['plan_sha256']}")
+    if approval["profile"] == "prod":
+        typer.echo("⚠ 后续 TTS 将产生费用")
+    typer.echo(f"  下一步: mmm run tts --task {task_id}")
+
+
+@run_app.command("tts")
+@_pipeline_locked(lambda task_id="", **_: [f"task:{task_id}"])
+def run_tts(
+    task_id: str = typer.Option("", "--task"),
+    force: bool = typer.Option(False, "--force", help="忽略有效片段缓存，重新合成"),
+) -> None:
+    """阶段6.6：执行已批准的完整合成，并切回片段级 WAV。"""
+    from .tts import runtime as tts_runtime
+
+    if not task_id:
+        typer.echo("✗ 必须提供 --task", err=True)
+        raise typer.Exit(1)
+
+    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    artifact_path = task_dir / tts_runtime.ARTIFACTS_PATH_NAME
+    if not force and _skip_if_done(task_id, "tts", artifact_path, force=force):
+        return
+    cfg = json.loads((task_dir / "task.json").read_text())
+    try:
+        summary = tts_runtime.synthesize_approved_plan(
+            task_dir, cfg.get("tts") or {}
+        )
+    except (FileNotFoundError, PermissionError, RuntimeError, ValueError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1)
+
+    db.record_job(
+        task_id, "tts", "done",
+        f"{summary['segments']} 段, provider={summary['provider']}, model={summary['model']}",
+    )
+    typer.echo(f"✓ TTS 合成完成: {summary['segments']} 段"
+               f"（{'复用' if summary['reused'] else '新合成'}）")
+    typer.echo(f"  provider/model: {summary['provider']} / {summary['model']}")
+    typer.echo(f"  产物: {artifact_path}")
+    for warning in summary.get("warnings") or []:
+        typer.echo(f"  ⚠ {warning}")
+
+
 @run_app.command("render")
 @_pipeline_locked(lambda video_id="", task="", path="", video="", **_: [
     f"task:{task}"] if task else (
@@ -476,7 +608,7 @@ def run_render(
     subtitle: str = typer.Option("", "--subtitle", help="字幕模式 overlay/letterbox/none，缺省用 task.json subtitle_mode"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
-    """阶段7 导出器A：ffmpeg 直出 MP4（MVP：本机 say 占位 TTS）。"""
+    """阶段7 导出器A：ffmpeg 直出 MP4。任务模式复用统一 TTS 片段。"""
     from . import catalog, stage_render
 
     if task:
@@ -547,7 +679,7 @@ def export_jianying(
     bgm_volume: float = typer.Option(0.3, "--bgm-volume", help="BGM 轨预设音量（人工精修再调）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
-    """阶段7 导出器B：生成剪映草稿（单向终点，不回流）。"""
+    """阶段7 导出器B：生成剪映草稿；只复用已完成 TTS 片段。"""
     from . import catalog, stage_jianying
 
     task_dir = db.PROJECT_ROOT / "tasks" / task_id

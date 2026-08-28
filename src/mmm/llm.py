@@ -25,6 +25,7 @@ ENV_PREFIXES = {
     "narrate_low": "MMM_NARRATE_LOW_",
     "narrate_high": "MMM_NARRATE_HIGH_",
     "vision": "MMM_VISION_",
+    "tts_plan": "MMM_TTS_PLAN_",
 }
 
 LOG_PATH = PROJECT_ROOT / "logs" / "llm_calls.jsonl"

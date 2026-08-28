@@ -2,8 +2,7 @@
 
 按 EDL 逐片段：切源视频（重编码）+ 解说配音 → 片段级音画对齐 → concat 成片。
 
-MVP 约定（与最终设计的差距，逐步补齐）：
-- TTS 用 macOS 本地 `say`（Tingting）占位，零成本验证端到端；云 TTS（火山/豆包）后续接入
+任务模式使用统一 TTS 适配层（dry/prod 均完整合成后切分）；冒烟路径保留本地占位/Edge：
 - 无片头（composition）、无 BGM、无字幕烧录
 - transform 裁 LOGO：系列级 + per-clip 覆盖
 - 片段时长 = max(源区间时长, TTS 时长)：TTS 更长时冻结末帧补齐（tpad clone）
@@ -88,7 +87,7 @@ def tts_edge(text: str, out_wav: Path, voice: str = EDGE_VOICE, rate: str = "+0%
 
 
 def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
-    """TTS 统一入口（接口隔离点）：(text, out_wav) -> duration。
+    """冒烟路径 TTS 入口（接口隔离点）：(text, out_wav) -> duration。
 
     按系列/任务配置的 tts.engine 分发：
     - say  ：macOS 本地占位（零依赖，机器音）
@@ -101,7 +100,7 @@ def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
     - MiniMax 不是 SSML：停顿用文本内 <#秒#>，语气词如 (laughs)/(breath)/(sighs)
       直接嵌入文本；emotion 放入 voice_setting.emotion，不由这些小括号标签控制。
 
-    云 TTS（火山/豆包）选型后在此加分支，调用方零改动。
+    任务模式不得直接调用；请使用 src/mmm/tts/runtime.py 的统一闸口流程。
     """
     cfg = tts_cfg or {}
     engine = cfg.get("engine", "say")
@@ -299,9 +298,16 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     seg_dir = work_dir / "render_segments"
     seg_dir.mkdir(parents=True, exist_ok=True)
 
-    # 清理旧产物：防止跨版本 EDL/narration 的 TTS 和片段残留被误复用
-    for old in seg_dir.glob("tts_*.wav"):
-        old.unlink()
+    # 任务模式必须经过统一 TTS 计划闸口；有效片段缓存由 runtime 按指纹校验。
+    prepared_tts: dict[int, Path] | None = None
+    if task_id:
+        from .tts import runtime as tts_runtime
+
+        prepared_tts = tts_runtime.prepare_render_artifacts(work_dir, tts_cfg)
+    else:
+        # 冒烟路径没有任务级计划；清理旧产物防止跨版本 EDL/narration 误复用。
+        for old in seg_dir.glob("tts_*.wav"):
+            old.unlink()
     for old in seg_dir.glob("seg_*.mp4"):
         old.unlink()
 
@@ -315,7 +321,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         wav = None
         if not clip.get("keep_audio"):
             wav = seg_dir / f"tts_{i:03d}.wav"
-            if not wav.exists():
+            if prepared_tts is not None:
+                wav = prepared_tts[i]
+            elif not wav.exists():
                 synthesize(clip["text"], wav, tts_cfg)
         seg_path = seg_dir / f"seg_{i:03d}.mp4"
         seg_dur = render_segment(video, clip, wav, seg_path, transform,

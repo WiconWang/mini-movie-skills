@@ -8,8 +8,9 @@
 
 ## 核心能力
 
-- **7 阶段流水线**：镜头切分 → ASR 台词对齐 → 视觉理解 → 时间轴索引 → 解说稿生成 → 选片段 → 合成导出
-- **人工闸口**：解说稿审阅（闸口1）→ 分镜板审阅（闸口2），质量由人把关
+- **七段主链路**：素材预处理 → 解说稿 → 选片 EDL → TTS 表演计划 → 语音合成 → MP4/剪映导出
+- **统一 TTS 适配层**：dry 固定 Edge TTS；prod 默认 MiniMax，可按 profile 替换供应商
+- **人工闸口**：解说稿审阅（闸口1）→ 分镜板审阅（闸口2）→ TTS 计划与费用确认（闸口3）
 - **保留区间**：自然语言指定原始素材哪些位置保留原声（raw_insert），后续内容自动后移
 - **双导出器**：ffmpeg 直出 MP4（无人值守）+ 剪映草稿（人工精修通道）
 - **输出规格可配**：分辨率/FPS 默认 1920×1080 30fps，支持 overlay（满屏字幕）/ letterbox（上下黑边电影画幅）
@@ -25,7 +26,7 @@
 | 操作系统 | macOS（开发环境）；Linux/Windows 需适配 | ffmpeg/libass 依赖系统 |
 | Python | **3.11+**（开发用 3.13） | 推荐 conda/mamba 管理环境 |
 | ffmpeg | 需带 **libass**（ASS 硬字幕用） | 见下方安装 |
-| 网络 | edge-tts 需联网（验证级 TTS） | 正式 TTS 选型后可替换 |
+| 网络 | Edge TTS 需联网（dry 验证）；MiniMax 为 prod 默认供应商 | 供应商由 TTS profile 决定 |
 | LLM 网关 | OpenAI 兼容接口（opencode zen） | 需 `.env` 配置 key |
 
 ### Python 依赖
@@ -65,10 +66,12 @@ brew install ffmpeg                 # macOS Homebrew（可能不带 libass）
 
 # 5. 配置 LLM 路由（.env，已被 gitignore）
 cp .env.example .env   # 若存在；否则手动创建
-# 三条 route 均独立配置 PROFILE / MODEL / BASE_URL / API_KEY：
+# 各 route 均独立配置 PROFILE / MODEL / BASE_URL / API_KEY：
 # - MMM_NARRATE_LOW_*：阶段5 剧情节拍抽取
 # - MMM_NARRATE_HIGH_*：阶段5 终稿写作与融合
 # - MMM_VISION_*：阶段3 视觉理解
+# - MMM_TTS_PLAN_*：阶段6.5 TTS 表演计划；不配置时回退 narrate_low
+# - MMM_MINIMAX_TTS_API_KEY：prod 默认 MiniMax TTS 密钥
 # 供应商行为差异在 config/models.yaml 的 profiles 中声明
 
 # 6. 初始化台账 + 导入素材登记（catalog.yaml 是本机登记文件，不入 Git）
@@ -109,9 +112,16 @@ mmm run narrate hd-p1 --target-minutes 15
 # 4. 阶段6：选片段 →【闸口2：审阅 tasks/{id}/storyboard.html】
 mmm run select --task hd-p1
 
-# 5. 阶段7：合成成片（输出带时间戳 + latest 固定名）
+# 5. 阶段6.5/6.6：生成并确认 TTS 表演计划，完整合成后切回片段 WAV
+mmm run tts-plan --task hd-p1 --profile dry
+# 审阅 tasks/hd-p1/tts_plan.html；prod 会产生费用，确认后再执行：
+mmm tts-approve --task hd-p1 --plan-sha256 <plan_sha256>
+mmm run tts --task hd-p1
+
+# 6. 阶段7：导出（输出带时间戳 + latest 固定名）
 mmm run render --task hd-p1            # ffmpeg 直出（默认 overlay 字幕）
 mmm run render --task hd-p1 --subtitle letterbox   # 上下黑边电影画幅
+# 剪映草稿只复用上面的 TTS 片段，不会隐式触发 TTS：
 mmm export-jianying hd-p1              # 剪映草稿（人工精修）
 
 # 产物
@@ -136,7 +146,7 @@ mmm export-jianying hd-p1              # 剪映草稿（人工精修）
 | `transform` | 画面变换（放大裁 LOGO/UID），系列级 + per-clip 覆盖 |
 | `subtitle_mode` | `overlay`（满屏硬字幕）/ `letterbox`（上下黑边，字幕落黑边） |
 | `bgm_playlist` | BGM 歌单（顺序铺设、循环、ducking） |
-| `tts` | 语音合成 `{engine, voice, speed}` |
+| `tts` | 统一 TTS 配置：`profile`、`dry`、`prod`、provider/model/voice/speed |
 | `target_minutes` | 目标正片时长（不含保留区间） |
 
 ### 任务配置 `tasks/{task_id}/task.json`
@@ -169,18 +179,18 @@ mmm export-jianying hd-p1              # 剪映草稿（人工精修）
 
 ## Skill 使用（自然语言）
 
-项目附带 `skills/mini-movie-maker`，Agent（Claude Code）可直接用自然语言驱动完整流程：
+项目附带 `skills/mini-movie-maker`，Agent 可直接用自然语言驱动完整流程：
 
 > "用 P1 到 P5 的素材建一个 15 分钟的任务，1080p，letterbox 黑边，第 5 分钟那场战斗要保留原声，BGM 用 temp 下那两首"
 
-Agent 会：创建任务 → 逐项确认配置（分辨率/FPS/黑边/缩放/BGM/片头/TTS/保留区间）→ 跑流水线 → 到闸口停下让你审阅。
+Agent 会：创建任务 → 逐项确认配置（分辨率/FPS/黑边/缩放/BGM/片头/TTS/保留区间）→ 跑流水线 → 在解说稿、分镜 EDL、TTS 计划三类闸口停下让你审阅。prod TTS 必须明确确认费用后才能继续。
 
 ---
 
 ## 目录结构
 
 ```
-├── src/mmm/              # 核心代码（7 阶段 + 台账 + LLM + 导出器）
+├── src/mmm/              # 核心代码（预处理/解说/选片/TTS/导出 + 台账 + LLM）
 │   ├── cli.py            # mmm 命令行入口
 │   ├── stage_shots.py    # 阶段1 镜头切分
 │   ├── stage_asr.py      # 阶段2 ASR + 全局对齐
@@ -189,6 +199,7 @@ Agent 会：创建任务 → 逐项确认配置（分辨率/FPS/黑边/缩放/BG
 │   ├── stage_index.py    # 阶段4 时间轴索引
 │   ├── stage_narrate.py  # 阶段5 解说稿生成
 │   ├── stage_select.py   # 阶段6 选片 + EDL
+│   ├── tts/              # 统一 TTS 适配层（edge/minimax、计划、切分）
 │   ├── stage_render.py   # 阶段7 导出器A（ffmpeg 直出）
 │   ├── stage_jianying.py # 阶段7 导出器B（剪映草稿）
 │   ├── stage_bgm.py      # BGM 轨
@@ -239,4 +250,6 @@ A: 不会。每次渲染输出带时间戳 `{title}_YYYYMMDD_HHMMSS.mp4`，历�
 - vision 阶段加速 v1.0.2：`docs/2026/0821-v1.0.2-vision阶段加速方案.md`（拼图+并发+短镜头废弃，9h→25min）
 - 画面 UI 分类与选片准入 v1.0.4：`docs/2026/0821-v1.0.4-画面UI分类与选片准入方案.md`（ui_type 三分类+gameplay 否决+raw_insert 豁免）
   - 过场升级垫 v1.0.5：同文档末尾章节（is_cutscene 参与分级，长过场≥6s 至少 C 级，解决高价值过场被空镜压过）
+- TTS 适配层与供应商闸口 v1.0.6：`docs/2026/0828-v1.0.6-TTS适配层与供应商闸口方案.md`
+- 全项目流程图：`docs/2026/0828-全项目流程图.md`
 - 进度：`PROGRESS.md`
