@@ -24,7 +24,7 @@ def _run(cmd: list[str]) -> None:
 
 
 def _normalize_video(video: Path, out: Path, target_w: int = 1920, target_h: int = 1080,
-                     target_fps: int = 30) -> None:
+                     target_fps: int = 30, trim: tuple[float, float] | None = None) -> None:
     """把片头视频统一成目标分辨率、yuv420p、目标 fps、aac 音轨（无音频则补静音）。
 
     必须固定 fps：片头若 fps 与正片不同，concat 后容器 fps 标记被片头污染，
@@ -32,9 +32,12 @@ def _normalize_video(video: Path, out: Path, target_w: int = 1920, target_h: int
     """
     vf = (f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
           f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={target_fps},format=yuv420p")
+    input_args: list[str] = []
+    if trim is not None:
+        input_args += ["-ss", f"{trim[0]:.3f}", "-t", f"{trim[1] - trim[0]:.3f}"]
     if _has_audio(video):
         cmd = [
-            ffmpeg_bin(), "-y", "-v", "quiet",
+            ffmpeg_bin(), "-y", "-v", "quiet", *input_args,
             "-i", str(video),
             "-vf", vf,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -43,7 +46,7 @@ def _normalize_video(video: Path, out: Path, target_w: int = 1920, target_h: int
         ]
     else:
         cmd = [
-            ffmpeg_bin(), "-y", "-v", "quiet",
+            ffmpeg_bin(), "-y", "-v", "quiet", *input_args,
             "-i", str(video),
             "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
             "-vf", vf,
@@ -70,7 +73,8 @@ def _has_audio(video: Path) -> bool:
 
 
 def compose(intro_files: list[Path], body: Path, out: Path,
-            out_w: int = 1920, out_h: int = 1080, out_fps: int = 30) -> None:
+            out_w: int = 1920, out_h: int = 1080, out_fps: int = 30,
+            outro_items: list[tuple[Path, tuple[float, float] | None]] | None = None) -> None:
     """把若干片头 + 正片按顺序拼接。所有输入统一重编码到目标规格后 concat copy。"""
     import tempfile
 
@@ -86,6 +90,11 @@ def compose(intro_files: list[Path], body: Path, out: Path,
         _normalize_video(body, body_norm, out_w, out_h, out_fps)
         normalized.append(body_norm)
 
+        for i, (f, trim) in enumerate(outro_items or []):
+            norm = tmpdir / f"outro_{i:03d}.mp4"
+            _normalize_video(f, norm, out_w, out_h, out_fps, trim=trim)
+            normalized.append(norm)
+
         list_file = tmpdir / "concat.txt"
         list_file.write_text("".join(f"file '{p}'\n" for p in normalized))
         _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
@@ -100,18 +109,27 @@ def from_task(task_id: str, body_path: Path) -> Path:
     cfg = json.loads((task_dir / "task.json").read_text())
     composition = cfg.get("composition", [])
 
-    intro_files = []
+    intro_files: list[Path] = []
+    outro_items: list[tuple[Path, tuple[float, float] | None]] = []
     for item in composition:
         t = item.get("type")
         src = item.get("src")
         if t in ("intro_common", "intro_special") and src:
-            p = PROJECT_ROOT / src
+            p = Path(src) if Path(src).is_absolute() else PROJECT_ROOT / src
             if p.exists():
                 intro_files.append(p)
             else:
                 raise FileNotFoundError(f"片头素材不存在: {p}")
+        elif t == "outro_special" and src:
+            p = Path(src) if Path(src).is_absolute() else PROJECT_ROOT / src
+            if not p.exists():
+                raise FileNotFoundError(f"片尾素材不存在: {p}")
+            trim = None
+            if item.get("start") is not None and item.get("end") is not None:
+                trim = (float(item["start"]), float(item["end"]))
+            outro_items.append((p, trim))
 
-    if intro_files:
+    if intro_files or outro_items:
         out_dir = PROJECT_ROOT / "output" / task_id
         out_dir.mkdir(parents=True, exist_ok=True)
         # final 名继承正片 stem（含时间戳），避免历史版本互相覆盖
@@ -120,7 +138,8 @@ def from_task(task_id: str, body_path: Path) -> Path:
         compose(intro_files, body_path, out_path,
                 out_w=int(out_cfg.get("width", 1920)),
                 out_h=int(out_cfg.get("height", 1080)),
-                out_fps=int(out_cfg.get("fps", 30)))
+                out_fps=int(out_cfg.get("fps", 30)),
+                outro_items=outro_items)
         return out_path
     # 无片头：正片即最终成片，直接返回避免大文件复制副本
     return body_path

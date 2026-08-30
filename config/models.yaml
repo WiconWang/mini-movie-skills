@@ -62,7 +62,8 @@ routes:
       max_tokens: 32768
       max_retries: 0
       retryable_status_codes: []
-      retry_network_errors: false
+      retry_network_errors: true
+      timeout_seconds: 900
 
   vision:
     defaults:

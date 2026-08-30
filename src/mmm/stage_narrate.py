@@ -160,7 +160,22 @@ def _build_low_prompt(timeline: dict) -> str:
 {_LOW_OUTPUT_SCHEMA_HINT}"""
 
 
-def _build_high_direct_prompt(timeline: dict, target_minutes: float) -> str:
+def _narrate_notes(output_dir: Path) -> str:
+    """读取任务配置中的 narration_notes，注入解说稿 prompt。"""
+    cfg_path = output_dir / "task.json"
+    if not cfg_path.exists():
+        return ""
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    raw = cfg.get("narration_notes") or ""
+    if isinstance(raw, list):
+        raw = "\n".join(str(item) for item in raw if str(item).strip())
+    return str(raw).strip()
+
+
+def _build_high_direct_prompt(timeline: dict, target_minutes: float, notes: str = "") -> str:
     lines_block, shots_block = _timeline_blocks(timeline)
     target_chars = int(target_minutes * CHARS_PER_MINUTE)
     return f"""你是剧情向短视频解说撰稿人。请把素材索引写成约 {target_minutes} 分钟（约 {target_chars} 字）的沉浸式故事复盘口播稿。
@@ -175,6 +190,9 @@ def _build_high_direct_prompt(timeline: dict, target_minutes: float) -> str:
 
 风格示例只学习表达方式，不复用人物、情节和措辞：
 {_NARRATIVE_EXAMPLE}
+
+补充说明（用于理解剧情，不得编造证据外的台词或情节）：
+{notes}
 
 素材索引：
 【台词表】
@@ -198,7 +216,7 @@ def _high_evidence_beat(beat: dict) -> dict:
     return evidence
 
 
-def _build_high_fuse_prompt(segments: list[dict], target_minutes: float) -> str:
+def _build_high_fuse_prompt(segments: list[dict], target_minutes: float, notes: str = "") -> str:
     target_chars = int(target_minutes * CHARS_PER_MINUTE)
     blocks = []
     for segment in segments:
@@ -223,6 +241,9 @@ def _build_high_fuse_prompt(segments: list[dict], target_minutes: float) -> str:
 
 风格示例只学习表达方式：
 {_NARRATIVE_EXAMPLE}
+
+补充说明（用于理解剧情，不得编造证据外的台词或情节）：
+{notes}
 
 剧情节拍证据：
 {evidence}
@@ -726,6 +747,7 @@ def _high_reuse(
     segments: list[SegmentPlan] | None,
     low_endpoint: LLMEndpoint | None,
     force: bool,
+    notes: str = "",
 ) -> tuple[bool, str, dict | None]:
     path = output_dir / "narration.json"
     if force:
@@ -754,6 +776,8 @@ def _high_reuse(
             return False, "LOW 证据配置不匹配", None
     if data.get("target_minutes") != target_minutes:
         return False, "target_minutes 不匹配", None
+    if data.get("narration_notes") != notes:
+        return False, "narration_notes 不匹配", None
     narration = data.get("narration")
     if not isinstance(narration, list) or not narration:
         return False, "终稿 narration 为空", None
@@ -797,10 +821,11 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
         raise ValueError("多视频任务不能使用 oneshot 模式")
 
     high_endpoint = load_endpoint("narrate_high")
+    notes = _narrate_notes(output_dir)
     direct_prompt = None
     needs_split = force_segment
     if not force_segment:
-        direct_prompt = _build_high_direct_prompt(timeline, target_minutes)
+        direct_prompt = _build_high_direct_prompt(timeline, target_minutes, notes)
         direct_tokens = estimate_tokens(direct_prompt)
         needs_split = direct_tokens > _context_available(high_endpoint)
 
@@ -816,7 +841,7 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
 
     if needs_split or is_multi or segments:
         fuse_source = _estimate_segments(segments, low_endpoint)
-        high_prompt = _build_high_fuse_prompt(fuse_source, target_minutes)
+        high_prompt = _build_high_fuse_prompt(fuse_source, target_minutes, notes)
         estimated = estimate_tokens(high_prompt)
         if estimated > _context_available(high_endpoint):
             raise RuntimeError(
@@ -825,7 +850,7 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
             )
         reusable, reason, _ = _high_reuse(
             output_dir, timeline, target_minutes, high_endpoint,
-            segments, low_endpoint, force,
+            segments, low_endpoint, force, notes,
         )
         return NarratePlan(
             mode="segment",
@@ -847,7 +872,7 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
     if estimated > _context_available(high_endpoint):
         raise RuntimeError("单视频 prompt 超出 HIGH 上下文，但未进入分片分支")
     reusable, reason, _ = _high_reuse(
-        output_dir, timeline, target_minutes, high_endpoint, None, None, force
+        output_dir, timeline, target_minutes, high_endpoint, None, None, force, notes
     )
     return NarratePlan(
         mode="oneshot",
@@ -912,6 +937,7 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
     timeline = json.loads(Path(timeline_path).read_text(encoding="utf-8"))
     timeline["_source"] = str(timeline_path)
     output_dir.mkdir(parents=True, exist_ok=True)
+    notes = _narrate_notes(output_dir)
 
     if not force and _human_edited_final(output_dir):
         raise RuntimeError("narration.json 标记为人工编辑稿，覆盖前必须显式使用 --force")
@@ -925,7 +951,7 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
     if plan.mode == "oneshot":
         reusable, _, existing = _high_reuse(
             output_dir, timeline, target_minutes, plan.high_endpoint,
-            None, None, force,
+            None, None, force, notes,
         )
         if reusable and existing:
             narration = existing["narration"]
@@ -1000,7 +1026,7 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
             (segment["segment_id"], beat["id"]): beat
             for segment in ordered_segments for beat in segment.get("beats", [])
         }
-        fuse_prompt = _build_high_fuse_prompt(ordered_segments, target_minutes)
+        fuse_prompt = _build_high_fuse_prompt(ordered_segments, target_minutes, notes)
         reusable, _, existing = _high_reuse(
             output_dir,
             timeline,
@@ -1009,6 +1035,7 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
             plan.segments,
             plan.low_endpoint,
             force,
+            notes,
         )
         if reusable and existing:
             narration = existing["narration"]
@@ -1057,6 +1084,7 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
     result = {
         "mode": used_mode,
         "target_minutes": target_minutes,
+        "narration_notes": notes,
         "routes": ["narrate_high"] if used_mode == "oneshot" else ["narrate_low", "narrate_high"],
         "prompt_fingerprints": prompt_fingerprints,
         "timeline_fingerprint": _timeline_fingerprint(timeline),

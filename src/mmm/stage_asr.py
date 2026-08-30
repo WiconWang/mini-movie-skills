@@ -91,6 +91,24 @@ def _video_duration(video: Path) -> float:
     return float(out)
 
 
+def _nearest_timed_video(lines: list[dict], idx: int,
+                          offsets: list[tuple[str, float, float]]) -> str:
+    """未匹配/无配音台词行按前后最近的有时间台词行推断归属视频。"""
+    n = len(lines)
+    for dist in range(0, max(idx, n - idx) + 1):
+        for j in sorted({idx - dist, idx + dist}):
+            if not (0 <= j < n):
+                continue
+            start = lines[j].get("start")
+            if start is None:
+                continue
+            for vid, off, dur in offsets:
+                if off <= start < off + dur:
+                    return vid
+            return offsets[-1][0]
+    return offsets[0][0]
+
+
 def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
     """多视频任务全局对齐（设计文档 §4 阶段2 多视频任务的对齐）。
 
@@ -143,11 +161,12 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
 
     # 3. 按 offset 拆回各视频 lines.json（本地时间，保持原 id 供全局时间轴使用）
     per_video: dict[str, list[dict]] = {vid: [] for vid, _, _ in offsets}
-    for line in result["lines"]:
+    for idx, line in enumerate(result["lines"]):
         if line["start"] is None:
             # 未匹配行归到台词顺序上最近的已匹配视频；找不到则归首个视频
-            line["video_id"] = offsets[0][0]
-            per_video[offsets[0][0]].append(line)
+            vid = _nearest_timed_video(result["lines"], idx, offsets)
+            line["video_id"] = vid
+            per_video[vid].append(line)
             continue
         vid, off = next(
             ((vid, off) for vid, off, dur in offsets if off <= line["start"] < off + dur),
