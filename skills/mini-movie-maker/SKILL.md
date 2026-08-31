@@ -15,6 +15,8 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 登记(add) → 建任务(task-create) → shots → align → vision → index → narrate →【闸口1】→ select →【闸口2】→ tts-plan →【闸口3】→ tts → render / export-jianying
 ```
 
+> **shots / vision 可提前于任务创建**：这两个阶段是 video 级，仅依赖 `source.mp4`（vision 还需 shots 产物），不读 task.json、不读 BGM/黑边等配置。拿到视频即可先跑，待配置确认后再 `add → task-create → index`，index 自动复用已有 `shots_meta.json`。详见「视觉预处理（可提前）」。
+
 ## 闸口协议（铁律）
 
 1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`
@@ -79,9 +81,9 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | `mmm db-init` | 初始化台账（迁移后第一步） |
 | `mmm add <video_id> --series <系列> [--version] [--chapter]` | 登记素材 + 台词预检 |
 | `mmm task-create <task_id> --videos a,b,c [--series]` | 建任务（顺序即 seq），生成 task.json |
-| `mmm run shots <video_id>` | 阶段1：镜头切分 + 黑白屏检测 |
-| `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐 |
-| `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5） |
+| `mmm run shots <video_id>` | 阶段1：镜头切分 + 黑白屏检测（仅需 source.mp4，可提前于任务创建） |
+| `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐。`--task` 模式复用各视频已落盘的 `asr.json`，转录过的不重跑 |
+| `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5）；仅需 source.mp4 + shots 产物，可提前于任务创建 |
 | `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
 | `mmm run narrate <task_id>` | 阶段5：解说稿生成 → 闸口1 |
 | `mmm run select <video_id> --task <task_id>` | 阶段6：选片 + footage_usage 排除 + 分镜板 → 闸口2（任务模式必须带 `--task`，否则按单视频 workspace 解析） |
@@ -95,6 +97,34 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 **断点续跑**：所有 `mmm run` / `export-jianying` 阶段命令启动时自动检查 jobs 表——
 已完成（done/gate_waiting）且产物存在则跳过，加 `--force` 强制重跑。
 vision 阶段逐镜头落盘 `shots_meta/shot_XXX.json`，中断重跑只补缺失/失败镜头。
+
+## 视觉预处理（可提前）
+
+shots / vision 是 **video 级**阶段，输入只有 `source.mp4`（vision 额外需 `shots.json`），**不依赖** task、台词、BGM、黑边或任何剪辑配置。因此可以在 BGM / 黑边 / 片头尚未敲定时提前跑，产物落 `workspace/{video_id}/`，后续 `index` 自动复用。
+
+适用场景：拿到视频先做重活，配置确认后再建任务；夜间批量预处理多个视频。
+
+```bash
+# 物料就绪即可（materials/{video_id}/source.mp4 存在，无需 mmm add / task-create）
+mmm run shots <video_id>     # 先切镜头 → shots.json
+mmm run vision <video_id>    # 再视觉理解 → shots_meta.json（吃 shots 产物）
+
+# 台词也到手时，可顺带提前 ASR（单视频模式落盘 asr.json，供后续 align --task 复用，不重跑）
+mmm run align <video_id>
+```
+
+随后正式建任务时，`align --task` 会复用夜间落盘的 `asr.json`，`index` 会复用 `shots_meta.json`——**不要对这两个阶段加 `--force`**，否则会白白重跑夜间已完成的重活。
+
+批量预处理（夜间挂多个视频）：
+
+```bash
+for vid in gs-16-p1 gs-16-p2 gs-16-p3; do
+  mmm run shots  "$vid"
+  mmm run vision "$vid"
+done
+```
+
+> 注：`mmm run shots/vision` 未 `mmm add` 也能跑（产物落在 `workspace/{video_id}/`）；但后续 `align`、`select`、`render` 等需任务上下文的阶段仍要求 `mmm add` + `task-create` 完成。
 
 ## 冒烟测试入口（免台账）
 
