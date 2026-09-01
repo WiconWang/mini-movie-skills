@@ -22,7 +22,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`
 2. `mmm run select` 完成后**必须停下**，通知用户审 `storyboard.html`，用户可能已手改 `edl.json`
 3. `mmm run tts-plan` 完成后**必须停下**，通知用户审 `tasks/{task_id}/tts_plan.html`
-4. 闸口3 必须逐句核对术语发音、停顿、语气、情绪；LLM 只能标注表演意图，**不得修改解说稿文本**
+4. 闸口3 必须逐句核对术语发音、停顿、语气、情绪；TTS 计划按句号/问号/感叹号/分号拆成句级标注，一个 EDL 解说片段会拆成多行；LLM 只能标注表演意图，**不得修改解说稿文本**
 5. 闸口3 报告必须给用户看**中文名词**：`gasps` 显示为「倒吸气」，`sighs` 显示为「叹气」；英文协议值只保留在内部 JSON 和供应商请求里
 6. 闸口3 必须明确告知费用：dry 的 Edge TTS 免费，但生成计划的 LLM 调用可能已计费；prod 默认 MiniMax，确认后将按字符产生 TTS 费用，失败重试可能再次计费
 7. 用户必须明确说「确认，接受费用」这类话术后，Agent 才能执行 `mmm tts-approve`；仅说「看一下」「先跑」不算确认
@@ -87,9 +87,9 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
 | `mmm run narrate <task_id>` | 阶段5：解说稿生成 → 闸口1 |
 | `mmm run select <video_id> --task <task_id>` | 阶段6：选片 + footage_usage 排除 + 分镜板 → 闸口2（任务模式必须带 `--task`，否则按单视频 workspace 解析） |
-| `mmm run tts-plan --task <task_id> [--profile dry\|prod]` | 阶段6.5：LLM 生成发音/停顿/语气/情绪标注 → 闸口3 |
+| `mmm run tts-plan --task <task_id> [--profile dry\|prod]` | 阶段6.5：按句拆分，LLM 逐句生成发音/停顿/语气/情绪标注 → 闸口3 |
 | `mmm tts-approve --task <task_id> --plan-sha256 <sha256>` | 记录用户对 TTS 表演计划的显式确认 |
-| `mmm run tts --task <task_id>` | 阶段6.6：完整合成一次，按时间戳切回 `tts_XXX.wav` |
+| `mmm run tts --task <task_id>` | 阶段6.6：完整合成一次，按词级时间轴切回句级 WAV，再合并回 EDL 片段 |
 | `mmm run render --task <task_id>` | 阶段7：ffmpeg 直出（含 transform/BGM/字幕/片头拼接） |
 | `mmm export-jianying <task_id>` | 导出器B：剪映草稿；只复用已生成的 TTS 片段，缺失时失败 |
 | `mmm status / locate / find` | 进度 / 路径直查 / 模糊检索 |
@@ -147,10 +147,18 @@ mmm run render --path <workspace> --video <视频> [--bgm "a.mp3;b.mp3"] [--subt
 
 - dry 固定 `provider: edge`，走 `full_then_split`
 - prod 默认 `provider: minimax`，可替换为后续接入的其他供应商
-- dry 和 prod 的主流程相同：完整合成 → 字/词时间轴 → 切回 `tts_XXX.wav` → 渲染/剪映
+- dry 和 prod 的主流程相同：完整合成 → 字/词时间轴 → 切回句级 WAV → 合并回 EDL 片段 → 渲染/剪映
+- TTS 计划按句拆分：句号/问号/感叹号/分号等作为句子边界，逐句标注停顿、语气、情绪、发音
 - LLM 只输出 provider 无关的表演计划；Edge 不支持的能力在闸口报告中明确显示降级
 - MiniMax API Key 放 `.env` 的 `MMM_MINIMAX_TTS_API_KEY`
 - 如需独立 TTS 计划模型，配置 `MMM_TTS_PLAN_PROFILE/MODEL/BASE_URL/API_KEY`；未配置时运行时回退 `narrate_low`
+
+### TTS 发音词库（兜底）
+
+- 词库文件：`config/tts/{系列}.yaml`，按 `common` + `versions.{版本}` 分层
+- 词库只做兜底：LLM 已给出的发音规则优先，词库仅在 LLM 未识别该词时补齐
+- 拼音格式统一为带声调数字（如 `an1 bo2`），格式非法时计划生成会报错
+- 修改词库后重新执行 `mmm run tts-plan --task <task_id> --force` 才会进入新计划
 
 ### 剪映导出边界（铁律）
 

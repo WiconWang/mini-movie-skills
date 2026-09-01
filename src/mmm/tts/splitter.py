@@ -59,7 +59,7 @@ def split_master_audio(master: Path, raw: RawSynthesis,
     for segment, span, (start_ms, end_ms) in zip(segments, spans, cuts):
         start_s = start_ms / 1000.0
         end_s = end_ms / 1000.0
-        wav_path = output_dir / f"tts_{segment.index:03d}.wav"
+        wav_path = output_dir / f"sent_{segment.index:03d}.wav"
         duration_s = end_s - start_s
         # Edge 没有原生停顿能力；由统一切分器补齐 manifest 声明的句间停顿。
         manual_pause_s = 0.0

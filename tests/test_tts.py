@@ -96,6 +96,49 @@ class LlmBoundaryTests(unittest.TestCase):
         self.assertEqual(segments[0].pronunciations[0].pinyin, "an1 bo2")
 
 
+class GlossaryTests(unittest.TestCase):
+    def test_series_glossary_loaded_with_common_and_version_terms(self):
+        from mmm.tts.glossary import load_series_pronunciations
+
+        rules = load_series_pronunciations("原神", "1.4")
+        by_term = {rule.term: rule for rule in rules}
+        self.assertEqual(by_term["安柏"].pinyin, "an1 bo2")
+        self.assertEqual(by_term["蒙德"].pinyin, "meng2 de2")
+        self.assertEqual(by_term["丽莎"].pinyin, "li4 sha1")
+        self.assertEqual(by_term["蒂玛乌斯"].pinyin, "di4 ma3 wu1 si1")
+        self.assertNotIn("贝雅特丽奇", by_term)
+
+    def test_apply_glossary_only_fills_missing_pronunciations(self):
+        from mmm.tts.runtime import _apply_glossary
+
+        segment = TtsSegment(
+            0, 1, "安柏和蒙德来了。", TtsPerformance(),
+            [PronunciationRule("安柏", "an1 bo2")],
+        )
+        units = [{"index": 0, "narration_id": 1, "source_text": "安柏和蒙德来了。"}]
+        glossary = [
+            PronunciationRule("安柏", "an1 bo3"),
+            PronunciationRule("蒙德", "meng2 de2"),
+        ]
+        result = _apply_glossary([segment], units, glossary)
+        rules = {rule.term: rule for rule in result[0].pronunciations}
+        self.assertEqual(rules["安柏"].pinyin, "an1 bo2")
+        self.assertEqual(rules["蒙德"].pinyin, "meng2 de2")
+
+
+class SentenceSplitTests(unittest.TestCase):
+    def test_split_sentences_keeps_punctuation_and_quotes(self):
+        from mmm.tts.runtime import split_sentences
+
+        text = "气氛不对了。她问，真的吗？他喊，太过分了！信上写着……“答案”。"
+        self.assertEqual(split_sentences(text), [
+            "气氛不对了。",
+            "她问，真的吗？",
+            "他喊，太过分了！",
+            "信上写着……“答案”。",
+        ])
+
+
 class AlignmentTests(unittest.TestCase):
     def test_alignment_consumes_edge_like_words_without_punctuation(self):
         segments = make_segments()
