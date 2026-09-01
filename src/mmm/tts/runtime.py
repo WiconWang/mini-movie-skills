@@ -5,17 +5,19 @@ from __future__ import annotations
 import html
 import json
 import re
+import subprocess
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from ..llm import chat, load_endpoint, LLMCallError, LLMEndpoint
-from ..media import probe_duration
+from ..media import ffmpeg_bin, probe_duration
 from .align import align_segments, clamp_pause_ms
+from .glossary import load_series_pronunciations
 from .providers import estimate_plan_cost, get_provider
 from .splitter import split_master_audio
 from .types import (
-    PronunciationRule, TtsPerformance, TtsProfile, TtsSegment,
+    PronunciationRule, TtsArtifact, TtsPerformance, TtsProfile, TtsSegment,
     dataclasses_to_dict, sha256_object,
 )
 
@@ -36,10 +38,17 @@ TONE_LABELS_ZH = {
     "gasps": "倒吸气",
     "emm": "嗯",
 }
+ALLOWED_EMOTIONS = {
+    "calm", "surprised", "sad", "happy", "angry", "fearful", "fluent",
+}
 EMOTION_LABELS_ZH = {
     "calm": "平稳",
     "surprised": "惊讶",
     "sad": "惋惜",
+    "happy": "开心",
+    "angry": "生气",
+    "fearful": "紧张",
+    "fluent": "流畅",
 }
 
 
@@ -63,9 +72,68 @@ def _write_json(path: Path, value: object) -> None:
 def narration_clips(edl: dict) -> list[dict]:
     """按最终 EDL 顺序提取解说片段；raw_insert 不进入 TTS。"""
     return [
-        clip for clip in edl.get("clips", [])
+        {**clip, "_edl_index": index}
+        for index, clip in enumerate(edl.get("clips", []))
         if clip.get("type") == "narration_clip" and not clip.get("keep_audio")
     ]
+
+
+SENTENCE_TERMINATORS = "。！？；…"
+_OPENING_CHARS = "“‘「『（[{<"
+_CLOSING_CHARS = "”’」』）]}>"
+
+
+def split_sentences(text: str) -> list[str]:
+    """按句末标点拆句，保留标点和闭合引号，供 TTS 句级表演标注。"""
+    sentences: list[str] = []
+    current: list[str] = []
+    quote_stack: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        current.append(ch)
+        if ch in _OPENING_CHARS:
+            quote_stack.append(ch)
+        elif ch in _CLOSING_CHARS and quote_stack:
+            quote_stack.pop()
+        if ch in SENTENCE_TERMINATORS and not quote_stack:
+            j = i + 1
+            while j < len(text) and text[j] in "…":
+                j += 1
+            if ch in "…" and j < len(text) and text[j] in _OPENING_CHARS:
+                i += 1
+                continue
+            i += 1
+            while i < len(text) and text[i] in "…":
+                current.append(text[i])
+                i += 1
+            while i < len(text) and text[i] in _CLOSING_CHARS:
+                current.append(text[i])
+                i += 1
+            sentence = "".join(current).strip()
+            if sentence:
+                sentences.append(sentence)
+            current = []
+        else:
+            i += 1
+    tail = "".join(current).strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def _sentence_units(clips: list[dict]) -> list[dict]:
+    """把一个 EDL 解说片段拆成句级标注单元，保留 narration_id 与 clip_index。"""
+    units: list[dict] = []
+    for clip in clips:
+        for sentence in split_sentences(clip["text"]):
+            units.append({
+                "index": len(units),
+                "narration_id": clip["narration_id"],
+                "source_text": sentence,
+                "clip_index": clip.get("index", 0),
+            })
+    return units
 
 
 def resolve_profile(tts_cfg: dict, profile: str | None = None) -> TtsProfile:
@@ -138,20 +206,32 @@ def _extract_json(text: str) -> dict:
     return json.loads(source[start:end + 1])
 
 
-def _build_llm_prompt(clips: list[dict], capabilities: object,
-                      maximum_pause_ms: int) -> str:
+def _build_llm_prompt(units: list[dict], capabilities: object,
+                      maximum_pause_ms: int,
+                      glossary: list[PronunciationRule] | None = None) -> str:
     lines = []
-    for clip in clips:
+    for unit in units:
         lines.append(json.dumps({
-            "index": clip["index"],
-            "narration_id": clip["narration_id"],
-            "source_text": clip["text"],
+            "index": unit["index"],
+            "narration_id": unit["narration_id"],
+            "source_text": unit.get("source_text") or unit.get("text"),
         }, ensure_ascii=False))
+
+    glossary_section = ""
+    if glossary:
+        glossary_section = (
+            "\n系统兜底发音（仅供 LLM 未识别时参考；你给出的规则优先）：\n"
+            + "\n".join(
+                json.dumps({"term": rule.term, "pinyin": rule.pinyin}, ensure_ascii=False)
+                for rule in glossary
+            )
+            + "\n"
+        )
 
     return f"""你是中文解说 TTS 表演标注器，不是编辑。
 
 绝对职责边界：
-1. source_text 是人工精雕细琢后的终稿，禁止修改、增删、合并、拆分或润色一个字。
+1. source_text 是终稿按句号、问号、感叹号、分号等切分后的单个句子；禁止修改、增删、合并、拆分或润色一个字。
 2. 只为容易读错的术语、人名、地名和多音字添加发音标注。
 3. 只添加停顿、语气、情绪、语速提示等语音表演意图。
 4. 不要输出供应商专属语法（例如 MiniMax 的 <#0.35#> 或 (breath)）。
@@ -160,41 +240,41 @@ def _build_llm_prompt(clips: list[dict], capabilities: object,
 表演约束：
 - pause_before_ms/pause_after_ms 是整数毫秒，范围 0~{maximum_pause_ms}，多数应为 0。
 - tone 只能使用：breath、sighs、chuckle、clear-throat、gasps、emm；不确定则为 null。
-- emotion 只能使用：calm、surprised、sad；不确定则 calm。
+- emotion 只能使用：calm、surprised、sad、happy、angry、fearful、fluent；不确定则 calm。
 - speed_hint 是 0.8~1.2 的小数；通常保持 1.0，不逐句乱调。
-- pronunciations 只用于确实容易读错的术语；示例：{{"term":"安柏","pinyin":"an1 bo2","note":"原神角色"}}。
+- pronunciations 只用于确实容易读错的术语；示例：{{"term":"安柏","pinyin":"an1 bo2"}}。
 - pronunciation.pinyin 使用空格分隔的带声调拼音。
 
 供应商能力：
 {json.dumps(capabilities, ensure_ascii=False)}
-
-解说片段：
+{glossary_section}
+解说句：
 {chr(10).join(lines)}
 
 严格输出 JSON：
 {{"segments":[{{"index":0,"narration_id":1,"source_text":"原文","performance":{{"pause_before_ms":0,"pause_after_ms":0,"tone":null,"emotion":"calm","speed_hint":1.0}},"pronunciations":[],"warnings":[]}}]}}"""
 
-
-def _parse_llm_segments(raw: dict, clips: list[dict], profile: TtsProfile,
+def _parse_llm_segments(raw: dict, units: list[dict], profile: TtsProfile,
                         maximum_pause_ms: int) -> list[TtsSegment]:
     items = raw.get("segments")
     if not isinstance(items, list):
         raise ValueError("LLM 表演计划缺少 segments 数组")
-    if len(items) != len(clips):
+    if len(items) != len(units):
         raise ValueError(
-            f"LLM 表演计划片段数不匹配：期望 {len(clips)}，实际 {len(items)}"
+            f"LLM 表演计划句数不匹配：期望 {len(units)}，实际 {len(items)}"
         )
 
     parsed: list[TtsSegment] = []
-    for index, (clip, item) in enumerate(zip(clips, items)):
+    for index, (unit, item) in enumerate(zip(units, items)):
         if int(item.get("index", -1)) != index:
             raise ValueError(f"LLM 表演计划 index 错误：位置 {index}")
-        if int(item.get("narration_id", -1)) != int(clip["narration_id"]):
+        if int(item.get("narration_id", -1)) != int(unit["narration_id"]):
             raise ValueError(f"LLM 表演计划 narration_id 错误：位置 {index}")
+        expected_text = unit.get("source_text") or unit.get("text")
         source_text = item.get("source_text")
-        if source_text != clip["text"]:
+        if source_text != expected_text:
             raise ValueError(
-                f"LLM 试图修改 narration_id={clip['narration_id']} 的解说文本"
+                f"LLM 试图修改 narration_id={unit['narration_id']} 的解说句文本"
             )
         performance = item.get("performance") or {}
         tone_value = performance.get("tone")
@@ -202,7 +282,7 @@ def _parse_llm_segments(raw: dict, clips: list[dict], profile: TtsProfile,
         if tone and tone not in ALLOWED_TONES:
             tone = None
         emotion_value = str(performance.get("emotion") or "calm").lower()
-        emotion = emotion_value if emotion_value in {"calm", "surprised", "sad"} else "calm"
+        emotion = emotion_value if emotion_value in ALLOWED_EMOTIONS else "calm"
         try:
             speed_hint = float(performance.get("speed_hint", 1.0))
         except (TypeError, ValueError):
@@ -221,7 +301,7 @@ def _parse_llm_segments(raw: dict, clips: list[dict], profile: TtsProfile,
 
         parsed.append(TtsSegment(
             index=index,
-            narration_id=int(clip["narration_id"]),
+            narration_id=int(unit["narration_id"]),
             source_text=source_text,
             performance=TtsPerformance(
                 pause_before_ms=clamp_pause_ms(
@@ -237,6 +317,25 @@ def _parse_llm_segments(raw: dict, clips: list[dict], profile: TtsProfile,
             pronunciations=rules,
         ))
     return parsed
+
+def _apply_glossary(segments: list[TtsSegment], units: list[dict],
+                    glossary: list[PronunciationRule]) -> list[TtsSegment]:
+    """词库兜底：LLM 已给出的发音优先，仅补齐 LLM 未识别的词。"""
+    if not glossary:
+        return segments
+    for index, (segment, unit) in enumerate(zip(segments, units)):
+        text = unit.get("source_text") or unit.get("text") or ""
+        existing = {rule.term: rule for rule in segment.pronunciations}
+        additions = [
+            rule for rule in glossary
+            if rule.term in text and rule.term not in existing
+        ]
+        if additions:
+            segments[index] = replace(
+                segment,
+                pronunciations=list(existing.values()) + additions,
+            )
+    return segments
 
 
 def _plan_document(clips: list[dict], profile: TtsProfile, segments: list[TtsSegment],
@@ -288,7 +387,14 @@ def _plan_html(document: dict) -> str:
             return "无"
         return EMOTION_LABELS_ZH.get(value, value)
 
+    last_narration = None
+    sub_index = 0
     for segment in plan["segments"]:
+        if segment["narration_id"] != last_narration:
+            last_narration = segment["narration_id"]
+            sub_index = 1
+        else:
+            sub_index += 1
         perf = segment["performance"]
         pronunciations = "、".join(
             f"{html.escape(rule['term'])}={html.escape(rule['pinyin'])}"
@@ -296,10 +402,11 @@ def _plan_html(document: dict) -> str:
         ) or "-"
         tone = html.escape(tone_label(perf.get("tone")))
         pause = f"前{perf.get('pause_before_ms', 0)}ms / 后{perf.get('pause_after_ms', 0)}ms"
+        id_cell = f"{segment['narration_id']}.{sub_index}"
         rows.append(
             "<tr>"
             f"<td>{segment['index'] + 1}</td>"
-            f"<td>{segment['narration_id']}</td>"
+            f"<td>{id_cell}</td>"
             f"<td>{html.escape(segment['source_text'])}</td>"
             f"<td>{html.escape(pronunciations)}</td>"
             f"<td>{html.escape(pause)}</td>"
@@ -325,7 +432,7 @@ def _plan_html(document: dict) -> str:
 <p>预估计费字符：{cost.get('billing_characters', 0)} ｜ 预估 TTS 费用：{fee:.4f} {html.escape(cost.get('currency', 'CNY'))}</p>
 {warning}
 <p>plan_sha256：<code>{html.escape(document['plan_sha256'])}</code></p>
-<table><thead><tr><th>#</th><th>ID</th><th>原文（不可修改）</th><th>发音</th><th>停顿</th><th>语气</th><th>情绪</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
+<table><thead><tr><th>#</th><th>片段.句</th><th>原文（不可修改）</th><th>发音</th><th>停顿</th><th>语气</th><th>情绪</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
 <p>确认命令：<code>mmm tts-approve --task &lt;task_id&gt; --plan-sha256 {html.escape(document['plan_sha256'])}</code></p>"""
 
 
@@ -341,14 +448,25 @@ def create_tts_plan(work_dir: Path, tts_cfg: dict, *, profile: str | None = None
     ]
     if not clips:
         raise ValueError("EDL 中没有 narration_clip，无需生成 TTS 计划")
+    units = _sentence_units(clips)
+    if not units:
+        raise ValueError("EDL 解说片段没有可拆分的句子，无需生成 TTS 计划")
+
+    task_cfg = {}
+    task_json = work_dir / "task.json"
+    if task_json.exists():
+        task_cfg = _read_json(task_json)
+    glossary = load_series_pronunciations(
+        task_cfg.get("series", ""), str(task_cfg.get("version") or "")
+    )
 
     resolved = resolve_profile(tts_cfg, profile)
     provider = get_provider(resolved.provider, resolved.options)
     capabilities = vars(provider.capabilities)
     maximum_pause_ms = int(tts_cfg.get("maximum_pause_ms", 2000))
-    prompt = _build_llm_prompt(clips, capabilities, maximum_pause_ms)
+    prompt = _build_llm_prompt(units, capabilities, maximum_pause_ms, glossary)
     endpoint = _load_plan_endpoint()
-    max_tokens = min(32768, 2048 + len(clips) * 180)
+    max_tokens = min(32768, 2048 + len(units) * 180)
     result = chat(
         endpoint,
         [{"role": "user", "content": prompt}],
@@ -356,7 +474,8 @@ def create_tts_plan(work_dir: Path, tts_cfg: dict, *, profile: str | None = None
         label="tts_plan",
     )
     raw = _extract_json(result.content)
-    segments = _parse_llm_segments(raw, clips, resolved, maximum_pause_ms)
+    segments = _parse_llm_segments(raw, units, resolved, maximum_pause_ms)
+    segments = _apply_glossary(segments, units, glossary)
     document, plan_sha256 = _plan_document(clips, resolved, segments, result)
     document["warnings"] = []
     if not resolved.provider == "edge":
@@ -404,17 +523,28 @@ def validate_plan_against_edl(document: dict, work_dir: Path) -> list[dict]:
     edl_path = work_dir / "edl.json"
     clips = narration_clips(_read_json(edl_path))
     segments = document.get("plan", {}).get("segments", [])
-    if len(segments) != len(clips):
-        raise ValueError("TTS 计划片段数与当前 EDL 不一致；请重新生成计划")
-    for index, (segment, clip) in enumerate(zip(segments, clips)):
-        if int(segment.get("narration_id", -1)) != int(clip["narration_id"]):
-            raise ValueError(f"TTS 计划第 {index} 段 narration_id 与 EDL 不一致")
-        if segment.get("source_text") != clip.get("text"):
-            raise ValueError(
-                f"TTS 计划第 {index} 段文本与 EDL 不一致；请重新生成计划"
-            )
+    cursor = 0
+    for clip in clips:
+        for sentence in split_sentences(clip["text"]):
+            if cursor >= len(segments):
+                raise ValueError(
+                    "TTS 计划句数不足，与当前 EDL 不一致；请重新生成计划"
+                )
+            segment = segments[cursor]
+            if int(segment.get("narration_id", -1)) != int(clip["narration_id"]):
+                raise ValueError(
+                    f"TTS 计划句 {cursor} narration_id 与 EDL 不一致"
+                )
+            if segment.get("source_text") != sentence:
+                raise ValueError(
+                    f"TTS 计划句 {cursor} 文本与 EDL 不一致；请重新生成计划"
+                )
+            cursor += 1
+    if cursor != len(segments):
+        raise ValueError(
+            "TTS 计划句数多于当前 EDL；请重新生成计划"
+        )
     return clips
-
 
 def approve_plan(work_dir: Path, claimed_sha256: str) -> dict:
     document = load_plan_document(work_dir)
@@ -486,18 +616,68 @@ def _artifacts_valid(work_dir: Path, document: dict,
         artifacts = metadata.get("artifacts", [])
         if len(artifacts) != len(clips):
             return None
-        plan_segments = document["plan"]["segments"]
         for index, item in enumerate(artifacts):
             wav_path = work_dir / item["wav_path"]
             if not wav_path.exists() or probe_duration(wav_path) <= 0:
                 return None
+            if int(item.get("index", -1)) != int(clips[index].get("_edl_index", index)):
+                return None
             if int(item.get("narration_id", -1)) != int(clips[index]["narration_id"]):
                 return None
-            if item.get("source_text") != plan_segments[index]["source_text"]:
+            if item.get("source_text") != clips[index].get("text"):
                 return None
         return artifacts
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return None
+
+
+def _concat_wavs(paths: list[Path], out: Path) -> None:
+    """把同一 EDL 片段的句级 WAV 按顺序拼接成渲染可消费的单文件。"""
+    list_file = out.with_suffix(".concat.txt")
+    try:
+        list_file.write_text(
+            "\n".join(f"file '{p.resolve()}'" for p in paths) + "\n",
+            encoding="utf-8",
+        )
+        r = subprocess.run([
+            ffmpeg_bin(), "-y", "-v", "error",
+            "-f", "concat", "-safe", "0",
+            "-i", str(list_file), "-c", "copy", str(out),
+        ], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"TTS 片段合并失败: {r.stderr[-500:]}")
+    finally:
+        list_file.unlink(missing_ok=True)
+
+
+def _merge_clip_artifacts(clips: list[dict], sentence_artifacts: list,
+                          output_dir: Path) -> list:
+    """句级产物按 narration_id 合并回 EDL 片段级，保持渲染 index 一一对应。"""
+    grouped: dict[int, list] = {}
+    for artifact in sentence_artifacts:
+        grouped.setdefault(artifact.narration_id, []).append(artifact)
+
+    merged = []
+    for clip_index, clip in enumerate(clips):
+        parts = sorted(grouped.get(clip["narration_id"], []), key=lambda a: a.index)
+        if not parts:
+            raise RuntimeError(f"narration_id={clip['narration_id']} 缺少句级 TTS 产物")
+        edl_index = int(clip.get("_edl_index", clip_index))
+        if len(parts) == 1:
+            wav_path = parts[0].wav_path
+        else:
+            wav_path = output_dir / f"tts_{edl_index:03d}.wav"
+            _concat_wavs([p.wav_path for p in parts], wav_path)
+        merged.append(TtsArtifact(
+            index=edl_index,
+            narration_id=clip["narration_id"],
+            source_text=clip["text"],
+            wav_path=wav_path,
+            duration_s=probe_duration(wav_path),
+            speech_start_ms=parts[0].speech_start_ms,
+            speech_end_ms=parts[-1].speech_end_ms,
+        ))
+    return merged
 
 
 def synthesize_approved_plan(work_dir: Path, tts_cfg: dict) -> dict:
@@ -529,16 +709,17 @@ def synthesize_approved_plan(work_dir: Path, tts_cfg: dict) -> dict:
 
     output_dir = work_dir / "render_segments"
     output_dir.mkdir(parents=True, exist_ok=True)
-    for old in output_dir.glob("tts_*.wav"):
+    for old in list(output_dir.glob("tts_*.wav")) + list(output_dir.glob("sent_*.wav")):
         old.unlink()
     (work_dir / ARTIFACTS_PATH_NAME).unlink(missing_ok=True)
 
     provider = get_provider(profile.provider, profile.options)
     raw = provider.synthesize(segments, profile, output_dir)
     spans = align_segments(segments, raw.timings)
-    artifacts = split_master_audio(
+    sentence_artifacts = split_master_audio(
         raw.audio_path, raw, segments, spans, output_dir
     )
+    artifacts = _merge_clip_artifacts(clips, sentence_artifacts, output_dir)
     metadata = {
         "schema_version": "tts_artifacts_v1",
         "plan_sha256": document["plan_sha256"],

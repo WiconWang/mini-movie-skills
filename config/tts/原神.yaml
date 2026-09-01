@@ -1,0 +1,18 @@
+# 原神系列 TTS 发音兜底词库
+# 词库只做 fallback：LLM 已给出的发音优先；这里仅在 LLM 未识别时补齐。
+# pinyin 使用带声调数字的拼音，例如 an1 bo2。
+
+common:
+  - term: 蒙德
+    pinyin: meng2 de2
+  - term: 丽莎
+    pinyin: li4 sha1
+  - term: 安柏
+    pinyin: an1 bo2
+  - term: 迪卢克
+    pinyin: di2 lu2 ke4
+
+versions:
+  "1.4":
+    - term: 蒂玛乌斯
+      pinyin: di4 ma3 wu1 si1

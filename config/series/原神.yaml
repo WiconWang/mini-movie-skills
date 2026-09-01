@@ -41,7 +41,7 @@ bgm_playlist:
 # dry 固定走 Edge TTS；prod 默认 MiniMax，用户可替换 provider。
 # 启用 prod 前必须在 task.json prod.voice_id 显式配置账户可用音色。
 tts:
-  profile: dry
+  profile: prod
   strategy: full_then_split
   maximum_pause_ms: 2000
   dry:
@@ -52,6 +52,8 @@ tts:
   prod:
     provider: minimax
     model: speech-2.8-hd
+    # 已验证音色（2026-09-01 试音通过）；备选：Chinese (Mandarin)_IntellectualGirl
+    voice_id: Chinese_playful_streamer_nv1
     speed: 1.1
     emotion: calm
     sample_rate: 44100
