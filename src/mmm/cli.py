@@ -603,7 +603,7 @@ def run_render(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     video: str = typer.Option("", "--video", help="直接给视频路径（冒烟测试用）"),
-    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频 + 命名模板 + transform + BGM + 字幕"),
+    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频 + 命名模板 + overlay_transform + BGM + 字幕"),
     bgm: str = typer.Option("", "--bgm", help="BGM 播放列表（分号分隔路径），缺省用 task.json bgm_playlist"),
     subtitle: str = typer.Option("", "--subtitle", help="字幕模式 overlay/letterbox/none，缺省用 task.json subtitle_mode"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),

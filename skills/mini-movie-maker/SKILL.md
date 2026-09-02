@@ -44,8 +44,9 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 |--------|------|-----------------|
 | 输出分辨率 / FPS | 成片规格，所有素材适配 | 1920×1080 / 30fps |
 | 黑边（letterbox） | 上下加黑边电影画幅，还是满屏 | overlay（满屏硬字幕） |
-| 缩放（transform） | 是否放大裁 LOGO/UID，scale/offset | scale 1.10 / 顶部对齐 |
+| overlay 画面适配 | 是否放大裁 LOGO/UID（overlay 模式），scale/offset | scale 1.024 / 上移 12.96（UID 出画） |
 | 字幕模式 | overlay 硬字幕 / letterbox / none | overlay |
+| 字幕字体 | 解说字幕字体（ASS Fontname） | LXGW WenKai Medium |
 | BGM 歌单 | 背景音乐列表 | 空（须指定） |
 | 片头（composition） | 是否拼片头 | 空（须指定） |
 | TTS 模式 | dry 固定 Edge；prod 指定供应商，默认 MiniMax | dry |
@@ -141,7 +142,11 @@ mmm run render --path <workspace> --video <视频> [--bgm "a.mp3;b.mp3"] [--subt
 
 ## 系列配置（类型适配层）
 
-`config/series/{系列}.yaml` 控制分级表、命名模板、composition、transform、subtitle_mode、TTS 音色、bgm_playlist。任务创建时继承系列默认，task.json 可覆盖。
+`config/series/{系列}.yaml` 控制分级表、命名模板、composition、subtitle_mode、TTS 音色、bgm_playlist，以及 overlay 字幕样式与画面适配。其中：
+
+- `subtitle`：overlay 字幕样式（`font_name`/`font_size`/`outline`/`margin_v`）+ 画面适配 `overlay_transform`（放大裁 UID）+ 底部羽化模糊遮罩 `overlay_mask`（含 `x`/`y`/`blur_sigma`/`feather_top`）。任务创建时经 `catalog.create_task` 继承到 task.json，任务/片段可覆盖。
+- `subtitle_mode`：`overlay`（默认，含底部模糊遮罩）/ `letterbox`（黑边电影画幅，未实现）。
+- 字体文件位于 `assets/fonts/`（当前仅 `LXGWWenKai-Medium.ttf`）。渲染时通过运行时临时 fontconfig（`FONTCONFIG_FILE`）命中，不注册系统字体，保证跨机器可复现。
 
 ### TTS 适配层
 

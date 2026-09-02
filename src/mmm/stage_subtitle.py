@@ -20,6 +20,24 @@ MAX_CHARS_PER_SCREEN = 18
 LINE_DURATION_MIN = 1.0
 LINE_DURATION_MAX = 6.0
 
+# overlay 字幕默认样式（series subtitle 块缺省回退；任务级可覆盖）。
+# PlayRes 基准 1280x720，烧到 1920x1080 时 libass 自动等比放大。
+DEFAULT_SUBTITLE_CFG = {
+    "font_name": "Noto Sans CJK SC",
+    "font_size": 42,
+    "outline": 2.5,
+    "margin_v": 40,
+    "play_res": [1280, 720],
+    "max_chars_per_screen": MAX_CHARS_PER_SCREEN,
+}
+
+
+def _norm_subtitle_cfg(cfg: dict | None) -> dict:
+    """合入默认值，返回一份完整字幕样式配置（不修改入参）。"""
+    merged = dict(DEFAULT_SUBTITLE_CFG)
+    merged.update(cfg or {})
+    return merged
+
 
 def _split_lines(text: str, max_chars: int = MAX_CHARS_PER_SCREEN) -> list[str]:
     """按语义断行：优先在标点处切断，不切断词语。"""
@@ -90,7 +108,8 @@ def _output_spans(clips: list[dict],
 
 def build_subtitles(narration: list[dict], clips: list[dict],
                     mode: str = "overlay",
-                    seg_durations: list[float] | None = None) -> str:
+                    seg_durations: list[float] | None = None,
+                    subtitle_cfg: dict | None = None) -> str:
     """生成 ASS 字幕内容。
 
     narration 与 clips 按 narration_id 一一对应，每句字幕对齐到对应片段在
@@ -99,16 +118,24 @@ def build_subtitles(narration: list[dict], clips: list[dict],
     if mode != "overlay":
         raise NotImplementedError(f"字幕模式 {mode} 尚未实现")
 
+    cfg = _norm_subtitle_cfg(subtitle_cfg)
+    font_name = cfg["font_name"]
+    font_size = cfg["font_size"]
+    outline = cfg["outline"]
+    margin_v = cfg["margin_v"]
+    play_res_x, play_res_y = cfg["play_res"]
+    max_chars = cfg["max_chars_per_screen"]
+
     spans = _output_spans(clips, seg_durations)
-    ass_header = """[Script Info]
+    ass_header = f"""[Script Info]
 Title: mini-movie-maker subtitles
 ScriptType: v4.00+
-PlayResX: 1280
-PlayResY: 720
+PlayResX: {play_res_x}
+PlayResY: {play_res_y}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Noto Sans CJK SC,42,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2.5,0,2,20,20,40,1
+Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,{outline},0,2,20,20,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -120,7 +147,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if not span:
             continue
         t0, t1 = span
-        lines = _split_lines(n["text"])
+        lines = _split_lines(n["text"], max_chars)
         if not lines:
             continue
         # 每行按字数分配时长，但受 [1.0, 6.0]s 约束
@@ -138,8 +165,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def build_srt(narration: list[dict], clips: list[dict],
-              seg_durations: list[float] | None = None) -> str:
+              seg_durations: list[float] | None = None,
+              subtitle_cfg: dict | None = None) -> str:
     """生成 SRT 软字幕（ffmpeg 无 libass 时的 fallback）。时间轴同 build_subtitles。"""
+    max_chars = _norm_subtitle_cfg(subtitle_cfg)["max_chars_per_screen"]
     spans = _output_spans(clips, seg_durations)
     entries = []
     idx = 1
@@ -148,7 +177,7 @@ def build_srt(narration: list[dict], clips: list[dict],
         if not span:
             continue
         t0, t1 = span
-        lines = _split_lines(n["text"])
+        lines = _split_lines(n["text"], max_chars)
         if not lines:
             continue
         total_dur = t1 - t0
@@ -217,7 +246,8 @@ def build_drawtext(narration: list[dict], clips: list[dict],
 
 
 def run(work_dir: Path, mode: str = "overlay",
-        seg_durations: list[float] | None = None) -> dict:
+        seg_durations: list[float] | None = None,
+        subtitle_cfg: dict | None = None) -> dict:
     """从 narration.json + edl.json 生成字幕文件（ASS + SRT fallback）。
 
     seg_durations：渲染实测的各片段时长（含 TTS 冻结补齐），用于对齐成片时间轴；
@@ -225,8 +255,10 @@ def run(work_dir: Path, mode: str = "overlay",
     """
     narration = json.loads((work_dir / "narration.json").read_text())["narration"]
     edl = json.loads((work_dir / "edl.json").read_text())
-    ass = build_subtitles(narration, edl["clips"], mode=mode, seg_durations=seg_durations)
-    srt = build_srt(narration, edl["clips"], seg_durations=seg_durations)
+    ass = build_subtitles(narration, edl["clips"], mode=mode,
+                          seg_durations=seg_durations, subtitle_cfg=subtitle_cfg)
+    srt = build_srt(narration, edl["clips"], seg_durations=seg_durations,
+                    subtitle_cfg=subtitle_cfg)
     (work_dir / "subtitles.ass").write_text(ass, encoding="utf-8")
     (work_dir / "subtitles.srt").write_text(srt, encoding="utf-8")
     return {"ass": str(work_dir / "subtitles.ass"), "srt": str(work_dir / "subtitles.srt")}
