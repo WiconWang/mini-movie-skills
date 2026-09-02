@@ -19,7 +19,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 
 ## 闸口协议（铁律）
 
-1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`
+1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`。dry 模式须提示"这是 LOW LLM 出的验证小样稿，精做终稿需 `--profile prod` 重跑"
 2. `mmm run select` 完成后**必须停下**，通知用户审 `storyboard.html`，用户可能已手改 `edl.json`
 3. `mmm run tts-plan` 完成后**必须停下**，通知用户审 `tasks/{task_id}/tts_plan.html`
 4. 闸口3 必须逐句核对术语发音、停顿、语气、情绪；TTS 计划按句号/问号/感叹号/分号拆成句级标注，一个 EDL 解说片段会拆成多行；LLM 只能标注表演意图，**不得修改解说稿文本**
@@ -57,7 +57,12 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | 目标时长 | 正片分钟数（不含 raw_insert） | 15 |
 | 保留区间 | raw_insert 原声段（见下节） | 空 |
 
-**执行方式**：Agent 逐项列出默认值 + 询问"是否调整"，用户可用自然语言一次答多项（如"1080p，加黑边，BGM 用这两首，第300秒要原声"）。所有答复写入 task.json，确认完毕后开始流水线。
+**执行方式**：
+
+1. **模式确认（必答，不得用默认值带过）**：Agent 先直接问"本次是 dry（验证小样，解说用 LOW LLM、TTS 用 Edge，基本不产生费用）还是 prod（精做终稿，解说用 HIGH LLM、TTS 用 MiniMax，按量计费）？"。用户必须明确回答 dry 或 prod；解说与 TTS 默认同档，用户也可分开指定（如"解说 prod、TTS dry"）。prod 模式须额外提醒费用风险。
+2. **其余配置逐项确认**：Agent 逐项列出默认值 + 询问"是否调整"，用户可用自然语言一次答多项（如"1080p，加黑边，BGM 用这两首，第300秒要原声"）。用户不提供某项时用系列默认值。
+
+所有答复写入 task.json，确认完毕后开始流水线。
 
 ## 保留区间配置（raw_insert）
 
