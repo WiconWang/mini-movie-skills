@@ -32,7 +32,7 @@ _HIGH_NARRATION_STYLE = """1. 只讲述证据中明确呈现的信息（对话�
 8. 【温度】解说人格冷静但有温度，情绪在危险、误会、失去、身份揭露和反转处自然加强；不使用网络热梗，不覆盖角色本人的幽默。在遭遇危险或揭露真相时，可加入主播自身的轻微反应词（如“这就有点意外了”“我们当时愣住了”），但必须与角色情绪区分开，避免抢戏。不在任何情况下使用感叹号堆砌（!!）。
 9. 【合并收束】相同功能的连续事件主动合并，概括结果并点出影响；关键节点用画面感描写收束，不以“某某说”结尾。
 10. 【口播稿】这是给主播念的稿子。禁用破折号引出解释或同位语；冒号副标题、书名号套副标题等影响换气的句式避免。禁止使用括号进行补充说明，所有内容必须融入主句；禁止使用“——”破折号，若需递进可用“，也就是”或“，即”。
-11. """
+11. 【原文引用】直接使用原文对话内容时，请用引号包裹。"""
 
 _HIGH_EVIDENCE_CONTRACT = (
     "beat_evidence_v2:omit_related_line_ids;keep_first_key_quote"
@@ -99,6 +99,7 @@ class NarratePlan:
     high_requests: int
     estimated_high_prompt_tokens: int | None
     needs_beat_remap: bool
+    profile: str = "dry"          # dry（HIGH 用 LOW LLM 省钱）/ prod（HIGH 用 HIGH LLM 精做）
     force: bool = False
 
 
@@ -807,9 +808,24 @@ def _human_edited_final(output_dir: Path) -> bool:
     return isinstance(data, dict) and data.get("_human_edited") is True
 
 
+def resolve_narrate_profile(narrate_cfg: dict | None, profile: str | None = None) -> str:
+    """解析 narrate 执行 profile：dry（HIGH 环节用 LOW LLM 省钱）/ prod（HIGH 用 HIGH LLM 精做）。
+
+    优先级：显式传入 > task.json narrate.profile > 缺省 dry。
+    缺省 dry：narrate 无 engine 旧字段可反推，且验证机器多、精做机器少，默认省钱。
+    与 TTS 的 resolve_profile 对齐命名，但缺省值不同（TTS 按 engine 反推）。
+    """
+    mode = str(profile or (narrate_cfg or {}).get("profile") or "").strip().lower()
+    if not mode:
+        mode = "dry"
+    if mode not in {"dry", "prod"}:
+        raise ValueError(f"narrate profile 只支持 dry/prod，当前: {mode}")
+    return mode
+
+
 def build_plan(timeline_path: Path, output_dir: Path, *,
                target_minutes: float = 15.0, mode: str = "auto",
-               force: bool = False) -> NarratePlan:
+               force: bool = False, profile: str = "dry") -> NarratePlan:
     if mode not in {"auto", "segment", "oneshot"}:
         raise ValueError(f"mode 必须是 auto/segment/oneshot: {mode}")
     timeline = json.loads(Path(timeline_path).read_text(encoding="utf-8"))
@@ -820,7 +836,7 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
     if mode == "oneshot" and is_multi:
         raise ValueError("多视频任务不能使用 oneshot 模式")
 
-    high_endpoint = load_endpoint("narrate_high")
+    high_endpoint = load_endpoint("narrate_high" if profile == "prod" else "narrate_low")
     notes = _narrate_notes(output_dir)
     direct_prompt = None
     needs_split = force_segment
@@ -864,6 +880,7 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
             high_requests=0 if reusable else 1,
             estimated_high_prompt_tokens=estimated,
             needs_beat_remap=True,
+            profile=profile,
             force=force,
         )
 
@@ -886,6 +903,7 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
         high_requests=0 if reusable else 1,
         estimated_high_prompt_tokens=estimated,
         needs_beat_remap=False,
+        profile=profile,
         force=force,
     )
 
@@ -893,6 +911,7 @@ def build_plan(timeline_path: Path, output_dir: Path, *,
 def plan_summary(plan: NarratePlan) -> dict:
     return {
         "mode": plan.mode,
+        "profile": plan.profile,
         "low_segments": len(plan.segments),
         "low_cache_hits": sum(1 for segment in plan.segments if segment.cache_hit),
         "low_requests": plan.low_requests,
@@ -925,7 +944,8 @@ def _clean_stale_segments(output_dir: Path, planned_names: set[str]) -> None:
 
 
 def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
-        mode: str = "auto", force: bool = False) -> dict:
+        mode: str = "auto", force: bool = False,
+        profile: str = "dry") -> dict:
     """生成解说稿；所有旧 schema 终稿与旧分片一律不复用。"""
     plan = build_plan(
         timeline_path,
@@ -933,6 +953,7 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
         target_minutes=target_minutes,
         mode=mode,
         force=force,
+        profile=profile,
     )
     timeline = json.loads(Path(timeline_path).read_text(encoding="utf-8"))
     timeline["_source"] = str(timeline_path)
@@ -1104,6 +1125,7 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
     return {
         "sentences": len(narration),
         "mode": used_mode,
+        "profile": plan.profile,
         "output_dir": str(output_dir),
         "low_segments": len(segments),
         "high_reused": plan.high_cache_reusable,

@@ -49,6 +49,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | 字幕字体 | 解说字幕字体（ASS Fontname） | LXGW WenKai Medium |
 | BGM 歌单 | 背景音乐列表 | 空（须指定） |
 | 片头（composition） | 是否拼片头 | 空（须指定） |
+| 解说模式 | dry（HIGH 融合用 LOW LLM 省钱出小样）/ prod（HIGH LLM 精做终稿） | dry |
 | TTS 模式 | dry 固定 Edge；prod 指定供应商，默认 MiniMax | dry |
 | prod TTS 供应商/模型 | 正式合成供应商与模型 | minimax / speech-2.8-hd |
 | prod 音色 | 必须是账户侧确认可用的 voice_id | 空（必须显式配置） |
@@ -86,7 +87,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐。`--task` 模式复用各视频已落盘的 `asr.json`，转录过的不重跑 |
 | `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5）；仅需 source.mp4 + shots 产物，可提前于任务创建 |
 | `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
-| `mmm run narrate <task_id>` | 阶段5：解说稿生成 → 闸口1 |
+| `mmm run narrate <task_id> [--profile dry\|prod]` | 阶段5：解说稿生成 → 闸口1。`--profile dry`（默认）HIGH 融合环节用 LOW LLM 省钱出小样；`prod` 用 HIGH LLM 精做终稿 |
 | `mmm run select <video_id> --task <task_id>` | 阶段6：选片 + footage_usage 排除 + 分镜板 → 闸口2（任务模式必须带 `--task`，否则按单视频 workspace 解析） |
 | `mmm run tts-plan --task <task_id> [--profile dry\|prod]` | 阶段6.5：按句拆分，LLM 逐句生成发音/停顿/语气/情绪标注 → 闸口3 |
 | `mmm tts-approve --task <task_id> --plan-sha256 <sha256>` | 记录用户对 TTS 表演计划的显式确认 |
@@ -135,7 +136,7 @@ done
 mmm run shots --path <视频文件>
 mmm run align --path <视频> --script <台词.jsonl>
 mmm run index --path <workspace 目录>
-mmm run narrate --timeline <timeline.json> [--target-minutes N]
+mmm run narrate --timeline <timeline.json> [--target-minutes N] [--profile dry|prod]
 mmm run select --path <workspace 目录>
 mmm run render --path <workspace> --video <视频> [--bgm "a.mp3;b.mp3"] [--subtitle overlay]
 ```

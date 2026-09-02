@@ -99,19 +99,39 @@ def _render_overlay_mask_png(mask_cfg: dict, out_w: int, out_h: int,
     return out_path.exists()
 
 
-def _overlay_mask_filter(blur_sigma: float = 20) -> str:
+def _overlay_mask_filter(blur_sigma: float = 20,
+                         enable_expr: str = "") -> str:
     """构造 overlay 底部模糊遮罩的 -filter_complex 链（mask PNG 作第二输入）。
 
     输入约定：0:v 为已成片视频；1:v 为 _render_overlay_mask_png 生成的静态灰阶遮罩。
     对整帧 gblur，再用遮罩 alpha（alphamerge）把模糊层以羽化方式盖回原画，
     最后以 [maskout] 输出。调用方需 `-loop 1 -shortest` 匹配视频时长，避免 color 无限流。
+
+    enable_expr：ffmpeg enable 表达式（如 "between(t,1.5,3.2)+..."），非空时遮罩
+    仅在该表达式为真的区间启用——把模糊限制在解说段，raw_insert 精彩镜头保留
+    原画不糊。空串则全程启用（兼容旧行为）。表达式含逗号，必须用单引号包住。
     """
+    enable = f":enable='{enable_expr}'" if enable_expr else ""
     return (
         "[0:v]split=2[a][b];"
         f"[a]gblur=sigma={blur_sigma}[blur];[blur]format=rgba[blr];"
         "[1:v]format=gray[mask];[blr][mask]alphamerge[blu];"
-        "[b][blu]overlay=format=auto[maskout]"
+        f"[b][blu]overlay=format=auto{enable}[maskout]"
     )
+
+
+def _narration_enable_expr(clips: list[dict],
+                           seg_durations: list[float] | None = None) -> str:
+    """生成仅在 narration_clip 成片区间为真的 ffmpeg enable 表达式。
+
+    遮罩只应盖在解说段（糊游戏原字幕、上方烧解说）；raw_insert 精彩镜头需保留
+    原画，不在其区间启用遮罩。区间取成片时间轴（concat 后从 0 累计），与字幕/
+    BGM 同源（复用 _bgm_duck_regions）。无解说段时返回空串（调用方据此跳过遮罩）。
+    """
+    narration, _ = _bgm_duck_regions(clips, seg_durations)
+    if not narration:
+        return ""
+    return "+".join(f"between(t,{s:.3f},{e:.3f})" for s, e in narration)
 
 
 TTS_MIN_INTERVAL = 1.5   # edge-tts 白嫖接口限速：两次调用最小间隔（秒）
@@ -326,11 +346,13 @@ def _burn_subtitles(video: Path, ass: Path, out: Path,
                     mask_png: Path | None = None,
                     blur_sigma: float = 20,
                     mask_cfg: dict | None = None,
+                    enable_expr: str = "",
                     out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H) -> None:
     """把 ASS 字幕烧录进视频（需要 ffmpeg 启用 libass）。
 
     mask_png：overlay 底部模糊遮罩静态图（_render_overlay_mask_png 生成），
        非空时作为第二输入，经 -loop 1 -shortest 全程覆盖，烧字幕在其上方；
+       enable_expr 非空时遮罩仅在解说段为真，raw_insert 精彩镜头保留原画不糊；
     mask_cfg：保留兼容（若传入且 mask_png 为空，回退无遮罩）；
     out_w/out_h：输出分辨率，遮罩坐标按此归一。
     """
@@ -339,7 +361,7 @@ def _burn_subtitles(video: Path, ass: Path, out: Path,
     cmd = [ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(video)]
     if mask_png and mask_png.exists():
         cmd += ["-loop", "1", "-i", str(mask_png)]
-        fc = f"{_overlay_mask_filter(blur_sigma)};[maskout]{ass_opt}[vout]"
+        fc = f"{_overlay_mask_filter(blur_sigma, enable_expr)};[maskout]{ass_opt}[vout]"
         cmd += ["-filter_complex", fc, "-map", "[vout]"]
         cmd += ["-shortest"]
     else:
@@ -477,16 +499,21 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
                                       seg_durations=seg_durations,
                                       subtitle_cfg=subtitle_cfg)
             tmp_out = out_path or work_dir / "render_sub.mp4"
-            # overlay 模式且启用遮罩时，先按分辨率生成静态羽化遮罩，再在烧字幕前叠加
+            # overlay 模式且启用遮罩时，先按分辨率生成静态羽化遮罩，再在烧字幕前叠加。
+            # 遮罩只盖解说段（糊游戏原字幕），raw_insert 精彩镜头保留原画不糊——
+            # 以 narration_clip 成片区间生成 enable 表达式约束 overlay 滤镜。
             use_mask = (subtitle_mode == "overlay" and overlay_mask.get("enabled"))
             mask_png = None
+            enable_expr = ""
             if use_mask:
+                enable_expr = _narration_enable_expr(clips, seg_durations)
                 mask_png = work_dir / "overlay_mask.png"
                 if not _render_overlay_mask_png(overlay_mask, out_w, out_h, mask_png):
                     mask_png = None   # 生成失败则回退无遮罩（不中断渲染）
             _burn_subtitles(raw_path, Path(subs["ass"]), tmp_out,
                             mask_png=mask_png,
                             blur_sigma=overlay_mask.get("blur_sigma", 20),
+                            enable_expr=enable_expr,
                             out_w=out_w, out_h=out_h)
             raw_path.unlink(missing_ok=True)
             if out_path is None:

@@ -365,6 +365,7 @@ def run_narrate(
     timeline: str = typer.Option("", "--timeline", help="直接给 timeline.json 路径（冒烟测试用，跳过 task_id）"),
     target_minutes: float = typer.Option(15.0, "--target-minutes", "-t", help="目标正片时长（分钟）"),
     mode: str = typer.Option("auto", "--mode", help="auto/segment/oneshot（多视频合一篇用 segment）"),
+    profile: str = typer.Option("dry", "--profile", help="dry（HIGH 用 LOW LLM 省钱）/ prod（HIGH 用 HIGH LLM 精做）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
     dry_run: bool = typer.Option(False, "--dry-run", help="仅输出请求计划，不发起 LLM 请求"),
 ) -> None:
@@ -393,10 +394,10 @@ def run_narrate(
     if dry_run:
         plan = stage_narrate.build_plan(
             timeline_path, out_dir, target_minutes=target_minutes,
-            mode=mode, force=force,
+            mode=mode, force=force, profile=profile,
         )
         info = stage_narrate.plan_summary(plan)
-        typer.echo(f"✓ narrate dry-run: mode={info['mode']}, "
+        typer.echo(f"✓ narrate dry-run: mode={info['mode']}, profile={info['profile']}, "
                    f"LOW segments={info['low_segments']}, cache hits={info['low_cache_hits']}, "
                    f"LOW requests={info['low_requests']}, HIGH requests={info['high_requests']}")
         typer.echo(f"  HIGH: profile={info['high_profile']}, model={info['high_model']}, "
@@ -413,7 +414,7 @@ def run_narrate(
         return
 
     summary = stage_narrate.run(timeline_path, out_dir, target_minutes=target_minutes,
-                                mode=mode, force=force)
+                                mode=mode, force=force, profile=profile)
     typer.echo(f"✓ 解说稿生成完成: {summary['sentences']} 句")
     typer.echo(f"  产物: {out_dir}/narration.json, narration.md")
     if task_id:

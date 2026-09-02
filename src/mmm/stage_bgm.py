@@ -17,6 +17,7 @@ CROSSFADE_SEC = 2.0
 MASTER_VOLUME = 0.5       # 全局 BGM 音量（用户要求整体压低 50%，约 -6dB）
 DUCK_DB = -14.0           # 解说段 BGM 在基础音量上再压低
 RAW_INSERT_DUCK_DB = -20.0   # raw_insert 段再压低（合计 -26dB，避免与素材原声重叠）
+OUTRO_FADE_SEC = 3.0      # 结尾淡出时长：成片最后 N 秒 BGM 线性降到 0（片尾纯原声/收尾）
 SAMPLE_RATE = 48000
 CHANNELS = 2        # BGM 保持立体声，混音前再 downmix 由调用方决定
 
@@ -108,12 +109,18 @@ def build_bgm_track(
                 ])
                 mixed = out_mix
 
-        # 3. ducking：解说段 / raw_insert 段音量压低
+        # 3. ducking：解说段 / raw_insert 段音量压低，末尾接结尾淡出
         duck_expr_parts = []
         for s, e in narration_regions:
             duck_expr_parts.append(f"between(t,{s:.3f},{e:.3f})")
         for s, e in raw_insert_regions:
             duck_expr_parts.append(f"between(t,{s:.3f},{e:.3f})")
+
+        # 结尾淡出：成片最后 OUTRO_FADE_SEC 秒线性降到 0。
+        # 片尾是 raw_insert 时得到纯原声；片尾是解说段时也是正常收尾，不突兀。
+        # 成片短于淡出时长则从 0 开始淡（fade-out start 不得为负）。
+        fade_start = max(total_duration - OUTRO_FADE_SEC, 0.0)
+        outro_fade = f"afade=t=out:st={fade_start:.3f}:d={OUTRO_FADE_SEC:.3f}"
 
         if duck_expr_parts:
             enable = "+".join(duck_expr_parts)
@@ -131,6 +138,7 @@ def build_bgm_track(
                 raw_enable = "+".join(raw_parts)
                 extra_db = RAW_INSERT_DUCK_DB - DUCK_DB
                 volume_filter += f",volume={10**(extra_db/20):.4f}:enable='{raw_enable}'"
+            volume_filter += f",{outro_fade}"
 
             out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm_ducked.wav")
             _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
@@ -139,7 +147,8 @@ def build_bgm_track(
         else:
             out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm.wav")
             _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
-                  "-t", str(total_duration), "-c", "copy", str(out_path)])
+                  "-af", outro_fade, "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS),
+                  "-t", str(total_duration), str(out_path)])
 
     return out_path
 

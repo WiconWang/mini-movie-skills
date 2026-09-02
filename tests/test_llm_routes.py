@@ -395,7 +395,8 @@ class NarratePipelineTests(unittest.TestCase):
             with mock.patch.object(
                 stage_narrate, "load_endpoint", side_effect=lambda route: endpoints[route]
             ), mock.patch.object(llm, "chat", side_effect=fake_chat):
-                summary = stage_narrate.run(timeline_path, output_dir, target_minutes=1)
+                summary = stage_narrate.run(timeline_path, output_dir, target_minutes=1,
+                                            profile="prod")
 
                 self.assertEqual(summary["mode"], "segment")
                 self.assertEqual(summary["low_segments"], 2)
@@ -423,9 +424,117 @@ class NarratePipelineTests(unittest.TestCase):
                 )
 
                 calls.clear()
-                summary = stage_narrate.run(timeline_path, output_dir, target_minutes=1)
+                summary = stage_narrate.run(timeline_path, output_dir, target_minutes=1,
+                                            profile="prod")
                 self.assertTrue(summary["high_reused"])
                 self.assertEqual(calls, [])
+
+    def test_dry_profile_uses_low_for_high_stage(self):
+        """dry 模式：HIGH 融合环节走 narrate_low route（省钱），不调 narrate_high。"""
+        low = make_endpoint("narrate_low")
+        high = make_endpoint("narrate_high")
+        endpoints = {"narrate_low": low, "narrate_high": high}
+        requested_routes: list[str] = []
+
+        line_specs = [
+            ("v1", 101, 0.0, 2.0, "第一段台词"),
+            ("v1", 102, 2.1, 4.0, "第一段结尾"),
+            ("v2", 201, 0.0, 2.0, "第二段台词"),
+            ("v2", 202, 2.1, 4.0, "第二段结尾"),
+        ]
+        timeline = {
+            "videos": [
+                {"video_id": "v1", "path": "v1.mp4"},
+                {"video_id": "v2", "path": "v2.mp4"},
+            ],
+            "lines": [
+                {
+                    "id": line_id,
+                    "video_id": video_id,
+                    "start": start,
+                    "end": end,
+                    "speaker": f"角色{video_id}",
+                    "text": text,
+                    "align": "matched",
+                }
+                for video_id, line_id, start, end, text in line_specs
+            ],
+            "shots": [],
+        }
+
+        def fake_chat(endpoint, messages, *, max_tokens, temperature=None, label=None):
+            requested_routes.append(endpoint.route)
+            # dry 模式下 HIGH 融合也走 narrate_low route，靠 label 区分语义：
+            #   LOW 分片 label 形如 "v1::chunk_001"；HIGH 融合 label 形如 "fuse:out"
+            if label and "::" in label:
+                payload = {
+                    "video_id": label.split("::", 1)[0],
+                    "chunk_id": label.split("::", 1)[1],
+                    "segment_id": label,
+                    "beats": [{
+                        "id": 1,
+                        "summary": f"{label} 的核心事件",
+                        "characters": ["我们"],
+                        "cause": "",
+                        "effect": "",
+                        "key_quotes": [],
+                        "related_line_ids": [101 if label.startswith("v1") else 201],
+                        "importance": "core",
+                        "confidence": "high",
+                    }],
+                }
+            else:
+                payload = {
+                    "narration": [{
+                        "id": 1,
+                        "text": "这是融合后的终稿。",
+                        "related_beat_ids": [
+                            {"segment_id": "v1::chunk_001", "beat_id": 1},
+                            {"segment_id": "v2::chunk_001", "beat_id": 1},
+                        ],
+                    }]
+                }
+            content = json.dumps(payload, ensure_ascii=False)
+            return llm.LLMCallResult(
+                content=content,
+                route=endpoint.route,
+                profile_id=endpoint.profile_id,
+                model=endpoint.model,
+                attempt=1,
+                duration_ms=1,
+                http_status=200,
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                response_chars=len(content),
+                response_preview=content[:80],
+                response_hash="sha256:test",
+                log_path="test-log",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            timeline_path = root / "timeline.json"
+            output_dir = root / "out"
+            timeline_path.write_text(json.dumps(timeline, ensure_ascii=False), "utf-8")
+            output_dir.mkdir()
+
+            with mock.patch.object(
+                stage_narrate, "load_endpoint", side_effect=lambda route: endpoints[route]
+            ), mock.patch.object(llm, "chat", side_effect=fake_chat):
+                summary = stage_narrate.run(timeline_path, output_dir, target_minutes=1,
+                                            profile="dry")
+
+            # dry：全程只调 narrate_low，HIGH 融合环节也走 narrate_low，绝不碰 narrate_high
+            self.assertNotIn("narrate_high", requested_routes)
+            self.assertIn("narrate_low", requested_routes)
+            # 融合环节调用了至少一次（LOW 分片 + HIGH 融合，均为 narrate_low）
+            self.assertGreaterEqual(requested_routes.count("narrate_low"), 3)
+            # 终稿产物标记的模型是 LOW 的（缓存指纹隔离依据）
+            result = json.loads(
+                (output_dir / "narration.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["models"]["narrate_high"]["model"], low.model)
+            self.assertEqual(summary["profile"], "dry")
 
 
 if __name__ == "__main__":
