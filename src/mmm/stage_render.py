@@ -4,7 +4,7 @@
 
 任务模式使用统一 TTS 适配层（dry/prod 均完整合成后切分）；冒烟路径保留本地占位/Edge：
 - 无片头（composition）、无 BGM、无字幕烧录
-- transform 裁 LOGO：系列级 + per-clip 覆盖
+- overlay_transform 裁 LOGO：系列级 + per-clip 覆盖
 - 片段时长 = max(源区间时长, TTS 时长)：TTS 更长时冻结末帧补齐（tpad clone）
 - keep_audio 的 raw_insert 段保留原声、不配解说
 """
@@ -29,6 +29,89 @@ def _run(cmd: list[str]) -> None:
     r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     if r.returncode != 0:
         raise RuntimeError(f"命令失败: {' '.join(cmd[:6])}...\n{r.stderr.decode()[-800:]}")
+
+
+def _run_with_env(cmd: list[str], env: dict[str, str] | None = None) -> None:
+    """与 _run 相同，但可选注入额外环境变量（用于 fontconfig 命中项目字体）。"""
+    import os
+
+    full_env = dict(os.environ)
+    full_env.update(env or {})
+    r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                       env=full_env)
+    if r.returncode != 0:
+        raise RuntimeError(f"命令失败: {' '.join(cmd[:6])}...\n{r.stderr.decode()[-800:]}")
+
+
+def _fontconfig_env(font_dir: Path | None = None) -> dict[str, str]:
+    """构造让 libass 命中项目字体目录的 FONTCONFIG_FILE 环境变量。
+
+    libass 的 fontsdir 只是让字体“可读”，但 family 匹配仍走宿主机 fontconfig；
+    本机缓存未索引 assets/fonts 时会静默回退到系统黑体。这里注入一个临时
+    fontconfig，把字体目录加进配置并继承系统默认，从而真正命中，而不注册系统字体。
+    """
+    from .media import PROJECT_ROOT
+
+    font_dir = font_dir or PROJECT_ROOT / "assets" / "fonts"
+    fc_root = Path(tempfile.mkdtemp(prefix="mmm-fonts-"))
+    cache_dir = fc_root / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    conf = fc_root / "fonts.conf"
+    conf.write_text(
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n'
+        '<fontconfig>\n'
+        f'  <dir>{font_dir}</dir>\n'
+        f'  <cachedir>{cache_dir}</cachedir>\n'
+        '  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>\n'
+        '</fontconfig>\n',
+        encoding="utf-8",
+    )
+    return {"FONTCONFIG_FILE": str(conf)}
+
+
+def _render_overlay_mask_png(mask_cfg: dict, out_w: int, out_h: int,
+                             out_path: Path) -> bool:
+    """用纯 ffmpeg 生成一张静态羽化遮罩 PNG（不依赖 Pillow/numpy）。
+
+    mask_cfg：subtitle.overlay_mask（x/y/blur_sigma/feather）。drawbox 画实心矩形，
+    再用 gblur 做边缘羽化（四周渐弱），输出为 0/255 灰阶 alpha 图，作为遮罩层。
+    生成失败返回 False（调用方应回退到无遮罩）。
+    """
+    if not mask_cfg or not mask_cfg.get("enabled"):
+        return False
+    x0, x1 = mask_cfg.get("x", [210, 1710])
+    y0, y1 = mask_cfg.get("y", [860, 1080])
+    blur_sigma = mask_cfg.get("blur_sigma", 20)
+    feather = mask_cfg.get("feather_top", mask_cfg.get("feather_side", 34))
+    w, h = int(x1 - x0), int(y1 - y0)
+    if w <= 0 or h <= 0:
+        return False
+    vf = (f"drawbox=x={int(x0)}:y={int(y0)}:w={w}:h={h}:color=white:t=fill,"
+          f"gblur=sigma={feather},format=gray")
+    cmd = [
+        ffmpeg_bin(), "-y", "-v", "quiet",
+        "-f", "lavfi", "-i", f"color=black:{out_w}x{out_h}:r=1:d=1",
+        "-frames:v", "1", "-vf", vf, str(out_path),
+    ]
+    if subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE).returncode != 0:
+        return False
+    return out_path.exists()
+
+
+def _overlay_mask_filter(blur_sigma: float = 20) -> str:
+    """构造 overlay 底部模糊遮罩的 -filter_complex 链（mask PNG 作第二输入）。
+
+    输入约定：0:v 为已成片视频；1:v 为 _render_overlay_mask_png 生成的静态灰阶遮罩。
+    对整帧 gblur，再用遮罩 alpha（alphamerge）把模糊层以羽化方式盖回原画，
+    最后以 [maskout] 输出。调用方需 `-loop 1 -shortest` 匹配视频时长，避免 color 无限流。
+    """
+    return (
+        "[0:v]split=2[a][b];"
+        f"[a]gblur=sigma={blur_sigma}[blur];[blur]format=rgba[blr];"
+        "[1:v]format=gray[mask];[blr][mask]alphamerge[blu];"
+        "[b][blu]overlay=format=auto[maskout]"
+    )
 
 
 TTS_MIN_INTERVAL = 1.5   # edge-tts 白嫖接口限速：两次调用最小间隔（秒）
@@ -112,10 +195,10 @@ def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
 
 
 def render_segment(video: Path, clip: dict, tts_wav: Path | None,
-                   out_path: Path, transform: dict | None = None,
+                   out_path: Path, overlay_transform: dict | None = None,
                    out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H,
                    fps: int = DEFAULT_OUT_FPS, letterbox: bool = False) -> float:
-    """渲染单个片段（视频重编码 + transform + 音轨对齐到片段时长），返回片段时长。
+    """渲染单个片段（视频重编码 + overlay 画面适配 + 音轨对齐到片段时长），返回片段时长。
 
     时长规则（声音为准，画面剪切）：
     - narration_clip：片段时长 = TTS 声音时长。画面比声音长→裁画面前段；
@@ -134,12 +217,12 @@ def render_segment(video: Path, clip: dict, tts_wav: Path | None,
         seg = max(a_dur, 0.5)
     pad_v = max(seg - v_dur, 0.0)
 
-    # transform 链：放大 + 位移，系列级可被 per-clip 覆盖
-    xf = dict(transform or {})
-    xf.update(clip.get("transform") or {})
-    if letterbox and not clip.get("transform"):
+    # overlay 画面适配链：放大 + 位移，系列级可被 per-clip 覆盖
+    xf = dict(overlay_transform or {})
+    xf.update(clip.get("overlay_transform") or {})
+    if letterbox and not clip.get("overlay_transform"):
         # 黑边模式默认不做缩放：黑边已营造电影画幅，放大裁切会破坏画面；
-        # 仅当 per-clip 显式指定 transform 时才应用
+        # 仅当 per-clip 显式指定 overlay_transform 时才应用
         xf = {}
     scale = xf.get("scale", 1.0)
     offset_x = xf.get("offset_x", 0)
@@ -239,18 +322,40 @@ def _mux_srt(video: Path, srt: Path, out: Path) -> None:
     ])
 
 
-def _burn_subtitles(video: Path, ass: Path, out: Path) -> None:
-    """把 ASS 字幕烧录进视频（需要 ffmpeg 启用 libass）。"""
-    # ffmpeg ass 滤镜要求路径中的特殊字符（逗号、冒号）用反斜杠转义
-    escaped = str(ass).replace("\\", "/").replace(":", "\\:").replace(",", "\\,")
-    _run([
-        ffmpeg_bin(), "-y", "-v", "quiet",
-        "-i", str(video),
-        "-vf", f"ass={escaped}",
+def _burn_subtitles(video: Path, ass: Path, out: Path,
+                    mask_png: Path | None = None,
+                    blur_sigma: float = 20,
+                    mask_cfg: dict | None = None,
+                    out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H) -> None:
+    """把 ASS 字幕烧录进视频（需要 ffmpeg 启用 libass）。
+
+    mask_png：overlay 底部模糊遮罩静态图（_render_overlay_mask_png 生成），
+       非空时作为第二输入，经 -loop 1 -shortest 全程覆盖，烧字幕在其上方；
+    mask_cfg：保留兼容（若传入且 mask_png 为空，回退无遮罩）；
+    out_w/out_h：输出分辨率，遮罩坐标按此归一。
+    """
+    env = {**_fontconfig_env()}
+    ass_opt = f"ass={_escape_ass_path(str(ass))}"
+    cmd = [ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(video)]
+    if mask_png and mask_png.exists():
+        cmd += ["-loop", "1", "-i", str(mask_png)]
+        fc = f"{_overlay_mask_filter(blur_sigma)};[maskout]{ass_opt}[vout]"
+        cmd += ["-filter_complex", fc, "-map", "[vout]"]
+        cmd += ["-shortest"]
+    else:
+        cmd += ["-filter_complex", f"[0:v]{ass_opt}[vout]", "-map", "[vout]"]
+    cmd += [
+        "-map", "0:a?",
         "-c:a", "copy",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         str(out),
-    ])
+    ]
+    _run_with_env(cmd, env)
+
+
+def _escape_ass_path(p: str) -> str:
+    """转义 ass 滤镜路径中的逗号/冒号/反斜杠。"""
+    return p.replace("\\", "/").replace(":", "\\:").replace(",", "\\,")
 
 
 def _burn_drawtext(video: Path, dt_filter: str, out: Path) -> None:
@@ -276,8 +381,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
 
-    # 任务级 transform / TTS / 输出规格（系列继承）；edl 或 clip 可覆盖
-    transform = edl.get("transform") or {}
+    # 任务级 subtitle（含画面适配 overlay_transform / 遮罩 overlay_mask）/ TTS / 输出规格
+    # （系列继承）；edl 或 clip 可覆盖
+    subtitle_cfg = edl.get("subtitle") or {}
     tts_cfg: dict = {}
     out_w, out_h, out_fps = DEFAULT_OUT_W, DEFAULT_OUT_H, DEFAULT_OUT_FPS
     if task_id:
@@ -286,12 +392,15 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         cfg_path = PROJECT_ROOT / "tasks" / task_id / "task.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
-            transform = cfg.get("transform") or transform
+            subtitle_cfg = cfg.get("subtitle") or subtitle_cfg
             tts_cfg = cfg.get("tts") or {}
             out_cfg = cfg.get("output") or {}
             out_w = int(out_cfg.get("width", DEFAULT_OUT_W))
             out_h = int(out_cfg.get("height", DEFAULT_OUT_H))
             out_fps = int(out_cfg.get("fps", DEFAULT_OUT_FPS))
+    # overlay 画面适配与遮罩（缺省回退空，即不放大不遮罩）
+    overlay_transform = subtitle_cfg.get("overlay_transform") or {}
+    overlay_mask = subtitle_cfg.get("overlay_mask") or {}
 
     out_path = out_path or work_dir / "render.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,7 +435,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
             elif not wav.exists():
                 synthesize(clip["text"], wav, tts_cfg)
         seg_path = seg_dir / f"seg_{i:03d}.mp4"
-        seg_dur = render_segment(video, clip, wav, seg_path, transform,
+        seg_dur = render_segment(video, clip, wav, seg_path, overlay_transform,
                                  out_w=out_w, out_h=out_h, fps=out_fps,
                                  letterbox=(subtitle_mode == "letterbox"))
         seg_durations.append(seg_dur)
@@ -364,9 +473,21 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
 
         narration = json.loads((work_dir / "narration.json").read_text())["narration"]
         if _has_ass_filter():
-            subs = stage_subtitle.run(work_dir, mode="overlay", seg_durations=seg_durations)
+            subs = stage_subtitle.run(work_dir, mode="overlay",
+                                      seg_durations=seg_durations,
+                                      subtitle_cfg=subtitle_cfg)
             tmp_out = out_path or work_dir / "render_sub.mp4"
-            _burn_subtitles(raw_path, Path(subs["ass"]), tmp_out)
+            # overlay 模式且启用遮罩时，先按分辨率生成静态羽化遮罩，再在烧字幕前叠加
+            use_mask = (subtitle_mode == "overlay" and overlay_mask.get("enabled"))
+            mask_png = None
+            if use_mask:
+                mask_png = work_dir / "overlay_mask.png"
+                if not _render_overlay_mask_png(overlay_mask, out_w, out_h, mask_png):
+                    mask_png = None   # 生成失败则回退无遮罩（不中断渲染）
+            _burn_subtitles(raw_path, Path(subs["ass"]), tmp_out,
+                            mask_png=mask_png,
+                            blur_sigma=overlay_mask.get("blur_sigma", 20),
+                            out_w=out_w, out_h=out_h)
             raw_path.unlink(missing_ok=True)
             if out_path is None:
                 out_path = tmp_out

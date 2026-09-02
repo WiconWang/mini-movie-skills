@@ -36,19 +36,19 @@ def detect_drafts_dir() -> Path | None:
     return None
 
 
-def _clip_settings(transform: dict, out_w: int = 1920, out_h: int = 1080):
-    """系列 transform（ffmpeg crop 语义）→ 剪映 ClipSettings。
+def _clip_settings(overlay_transform: dict, out_w: int = 1920, out_h: int = 1080):
+    """系列 overlay_transform（ffmpeg crop 语义）→ 剪映 ClipSettings。
 
     单位换算：剪映位移以「半画布宽/高」为单位（如 1920x1080 → x/960, y/540），
     且 y 轴负向朝下（剪映字幕底部参考值 -0.8），与 ffmpeg crop 偏移方向相反。
     """
     import pyJianYingDraft as draft
 
-    scale = transform.get("scale", 1.0)
+    scale = overlay_transform.get("scale", 1.0)
     return draft.ClipSettings(
         scale_x=scale, scale_y=scale,
-        transform_x=transform.get("offset_x", 0) / (out_w / 2),
-        transform_y=-transform.get("offset_y", 0) / (out_h / 2),
+        transform_x=overlay_transform.get("offset_x", 0) / (out_w / 2),
+        transform_y=-overlay_transform.get("offset_y", 0) / (out_h / 2),
     )
 
 
@@ -70,15 +70,16 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
 
-    # transform / TTS / 输出规格继承链与导出器A 相同：task.json（系列继承）> edl 级 > per-clip 覆盖
-    transform = edl.get("transform") or {}
+    # overlay_transform / TTS / 输出规格继承链与导出器A 相同：
+    # task.json（系列继承）> edl 级 > per-clip 覆盖
+    overlay_transform = (edl.get("subtitle") or {}).get("overlay_transform") or {}
     tts_cfg: dict = {}
     out_w, out_h, out_fps = 1920, 1080, 30
     if task_id:
         cfg_path = PROJECT_ROOT / "tasks" / task_id / "task.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
-            transform = cfg.get("transform") or transform
+            overlay_transform = (cfg.get("subtitle") or {}).get("overlay_transform") or overlay_transform
             tts_cfg = cfg.get("tts") or {}
             out_cfg = cfg.get("output") or {}
             out_w = int(out_cfg.get("width", out_w))
@@ -129,8 +130,8 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
 
         # 全程整数微秒，避免字符串毫秒舍入导致片段间 1ms 重叠（剪映拒绝重叠段）
         t_us = round(t * 1e6)
-        xf = dict(transform)
-        xf.update(clip.get("transform") or {})
+        xf = dict(overlay_transform)
+        xf.update(clip.get("overlay_transform") or {})
         script.add_segment(draft.VideoSegment(
             str(video.resolve()),
             draft.trange(t_us, round(v_dur * 1e6)),

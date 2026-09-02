@@ -18,13 +18,30 @@ title_template: "原神{version}-{chapter}"
 composition:
   - {type: intro_special, src: assets/intros/genshin-1.6/1.6盛夏.mp4}
 
-# 画面变换（裁 LOGO/UID）：放大 110%，顶部对齐（水平居中、垂直贴顶），
-# 右下角 UID 水印区整行出画。offset_y=-36 使 crop 起点贴顶（(ih-720)/2-36=0）。
-# 不同录制源 LOGO 位置不同可 per-clip 覆盖
-transform: {scale: 1.10, offset_x: 0, offset_y: -36}
-
-# 字幕模式：overlay（白边描边压画面）/ letterbox（黑边电影画幅，未实现）
+# 字幕模式：overlay（白边描边压画面，含底部模糊遮罩）/ letterbox（黑边电影画幅，未实现）
 subtitle_mode: overlay
+
+# overlay 字幕样式 + 画面适配 + 底部模糊遮罩（系列级默认，因游戏/源 UI 布局可不同）。
+# 该块会被 catalog.create_task 继承到 task.json；任务/片段可覆盖。
+subtitle:
+  # 字幕字体（需与 assets/fonts 下文件名对应；libass 经运行时 fontconfig 命中，不注册系统字体）
+  font_name: LXGW WenKai Medium
+  font_size: 42             # 基准 PlayRes 1280x720
+  outline: 2.5              # 白字黑描边
+  margin_v: 40              # 底部边距，落在遮罩带内
+  play_res: [1280, 720]
+  max_chars_per_screen: 18  # 每屏最大字数，语速联动
+  # overlay 画面适配：放大 1.024、上移 12.96，让右下角 UID 刚好整行出画。
+  # 不同录制源 UID 位置不同可 per-clip 覆盖
+  overlay_transform: {scale: 1.024, offset_x: 0, offset_y: -12.96}
+  # 底部模糊遮罩：盖住游戏原字幕并在其上方烧解说字幕；边缘羽化避免生硬矩形
+  overlay_mask:
+    enabled: true
+    x: [210, 1710]          # 横向范围（宽1500，居中）
+    y: [860, 1080]          # 纵向范围（高220）
+    blur_sigma: 20          # 高斯模糊强度
+    feather_top: 34         # 上边缘羽化像素数
+    feather_side: 22        # 左右边缘羽化像素数
 
 # BGM 歌单（任务级人工指定，与剧情地区/氛围相符；顺序铺设、放完循环）
 bgm_playlist:

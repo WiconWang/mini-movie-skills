@@ -30,6 +30,7 @@ build/
 
 # ===== 系统 =====
 .DS_Store
+.uuid
 
 # 密钥
 .env
