@@ -11,6 +11,40 @@ common:
     pinyin: an1 bo2
   - term: 迪卢克
     pinyin: di2 lu2 ke4
+  - term: 重云
+    pinyin: chong2 yun2
+  - term: 八重神子
+    pinyin: ba1 chong2 shen2 zi3
+  - term: 行秋
+    pinyin: xing2 qiu1
+  - term: 鹿野院平藏
+    pinyin: lu4 ye3 yuan4 ping2 cang2
+  - term: 五百藏
+    pinyin: wu3 bai3 cang2
+  - term: 神里绫华
+    pinyin: shen2 li3 ling2 hua2
+  - term: 那维莱特
+    pinyin: na4 wei2 lai2 te4
+  - term: 珐露珊
+    pinyin: fa4 lu4 shan1
+  - term: 桓那兰那
+    pinyin: huan2 na4 lan2 na4
+  - term: 千壑沙地
+    pinyin: qian1 he4 sha1 di4
+  - term: 鹤观
+    pinyin: he4 guan1
+  - term: 白桦雪葬地
+    pinyin: bai2 hua4 xue3 zang4 di4
+  - term: 翘枝崖
+    pinyin: qiao2 zhi1 ya2
+  - term: 朝雾
+    pinyin: zhao1 wu4
+  - term: 笹百合
+    pinyin: shi4 bai3 he2
+  - term: 茜特菈莉
+    pinyin: xi1 te4 la1 li4
+  - term: 阿蕾奇诺
+    pinyin: a1 lei3 qi2 nuo4
 
 versions:
   "1.4":

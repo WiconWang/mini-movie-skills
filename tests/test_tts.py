@@ -108,7 +108,7 @@ class GlossaryTests(unittest.TestCase):
         self.assertEqual(by_term["蒂玛乌斯"].pinyin, "di4 ma3 wu1 si1")
         self.assertNotIn("贝雅特丽奇", by_term)
 
-    def test_apply_glossary_only_fills_missing_pronunciations(self):
+    def test_apply_glossary_overrides_llm_by_glossary(self):
         from mmm.tts.runtime import _apply_glossary
 
         segment = TtsSegment(
@@ -122,7 +122,7 @@ class GlossaryTests(unittest.TestCase):
         ]
         result = _apply_glossary([segment], units, glossary)
         rules = {rule.term: rule for rule in result[0].pronunciations}
-        self.assertEqual(rules["安柏"].pinyin, "an1 bo2")
+        self.assertEqual(rules["安柏"].pinyin, "an1 bo3")
         self.assertEqual(rules["蒙德"].pinyin, "meng2 de2")
 
 

@@ -320,21 +320,25 @@ def _parse_llm_segments(raw: dict, units: list[dict], profile: TtsProfile,
 
 def _apply_glossary(segments: list[TtsSegment], units: list[dict],
                     glossary: list[PronunciationRule]) -> list[TtsSegment]:
-    """词库兜底：LLM 已给出的发音优先，仅补齐 LLM 未识别的词。"""
+    """词库硬约束：词库词条只要出现在文本中，就强制覆盖 LLM 的发音标记，
+    且词库优先于 LLM 标注，从根上防止 TTS 读错；词库之外的 LLM 发音保留。"""
     if not glossary:
         return segments
+    glossary_by_term = {rule.term: rule for rule in glossary}
     for index, (segment, unit) in enumerate(zip(segments, units)):
         text = unit.get("source_text") or unit.get("text") or ""
-        existing = {rule.term: rule for rule in segment.pronunciations}
-        additions = [
-            rule for rule in glossary
-            if rule.term in text and rule.term not in existing
-        ]
-        if additions:
-            segments[index] = replace(
-                segment,
-                pronunciations=list(existing.values()) + additions,
-            )
+        forced = [rule for term, rule in glossary_by_term.items() if term in text]
+        if not forced:
+            continue
+        existing = {
+            rule.term: rule
+            for rule in segment.pronunciations
+            if rule.term not in glossary_by_term
+        }
+        segments[index] = replace(
+            segment,
+            pronunciations=list(existing.values()) + forced,
+        )
     return segments
 
 
