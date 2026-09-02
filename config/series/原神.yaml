@@ -14,9 +14,9 @@ class_table:
 # 成片命名模板（字段：task_id/series/version/chapter/video_id）
 title_template: "原神{version}-{chapter}"
 
-# 片头组合（阶段7 composition；src 相对项目根）
-composition:
-  - {type: intro_special, src: assets/intros/genshin-1.6/1.6盛夏.mp4}
+# BGM / 片头为版本物料，不在系列 yaml 配置：
+# 建任务时由 `mmm task-create --bgm-dir <目录> --intro-dir <目录>` 扫码生成清单写入 task.json，
+# 下游 stage 直接消费清单。版本目录约定：assets/bgm/V{版本}版本/、assets/intros/V{版本}版本/。
 
 # 字幕模式：overlay（白边描边压画面，含底部模糊遮罩）/ letterbox（黑边电影画幅，未实现）
 subtitle_mode: overlay
@@ -42,17 +42,6 @@ subtitle:
     blur_sigma: 20          # 高斯模糊强度
     feather_top: 34         # 上边缘羽化像素数
     feather_side: 22        # 左右边缘羽化像素数
-
-# BGM 歌单（任务级人工指定，与剧情地区/氛围相符；顺序铺设、放完循环）
-bgm_playlist:
-  - "assets/bgm/genshin-1.6/希望的航程.mp3"
-  - "assets/bgm/genshin-1.6/广袤的晴空.mp3"
-  - "assets/bgm/genshin-1.6/无虑无猜的岁月.mp3"
-  - "assets/bgm/genshin-1.6/水母之歌.mp3"
-  - "assets/bgm/genshin-1.6/海螺中的回音.mp3"
-  - "assets/bgm/genshin-1.6/海风细语.mp3"
-  - "assets/bgm/genshin-1.6/遥远的嘱托.mp3"
-  - "assets/bgm/genshin-1.6/闲适的陪伴.mp3"
 
 # TTS 统一适配层配置（任务可覆盖 task.json 的 tts 字段）
 # dry 固定走 Edge TTS；prod 默认 MiniMax，用户可替换 provider。

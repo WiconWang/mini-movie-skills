@@ -47,8 +47,8 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | overlay 画面适配 | 是否放大裁 LOGO/UID（overlay 模式），scale/offset | scale 1.024 / 上移 12.96（UID 出画） |
 | 字幕模式 | overlay 硬字幕 / letterbox / none | overlay |
 | 字幕字体 | 解说字幕字体（ASS Fontname） | LXGW WenKai Medium |
-| BGM 歌单 | 背景音乐列表 | 空（须指定） |
-| 片头（composition） | 是否拼片头 | 空（须指定） |
+| BGM 歌单 | 背景音乐列表（task-create 扫码生成，此处确认/调序） | 空（须指定） |
+| 片头（composition） | 是否拼片头（task-create 扫码生成，此处确认） | 空（须指定） |
 | 解说模式 | dry（HIGH 融合用 LOW LLM 省钱出小样）/ prod（HIGH LLM 精做终稿） | dry |
 | TTS 模式 | dry 固定 Edge；prod 指定供应商，默认 MiniMax | dry |
 | prod TTS 供应商/模型 | 正式合成供应商与模型 | minimax / speech-2.8-hd |
@@ -87,7 +87,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 |------|------|
 | `mmm db-init` | 初始化台账（迁移后第一步） |
 | `mmm add <video_id> --series <系列> [--version] [--chapter]` | 登记素材 + 台词预检 |
-| `mmm task-create <task_id> --videos a,b,c [--series]` | 建任务（顺序即 seq），生成 task.json |
+| `mmm task-create <task_id> --videos a,b,c [--series] [--bgm-dir <目录>] [--intro-dir <目录>]` | 建任务（顺序即 seq），生成 task.json。`--bgm-dir`/`--intro-dir` 扫版本目录生成 BGM 歌单与片头清单（见「BGM/片头物料化」） |
 | `mmm run shots <video_id>` | 阶段1：镜头切分 + 黑白屏检测（仅需 source.mp4，可提前于任务创建） |
 | `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐。`--task` 模式复用各视频已落盘的 `asr.json`，转录过的不重跑 |
 | `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5）；仅需 source.mp4 + shots 产物，可提前于任务创建 |
@@ -148,11 +148,21 @@ mmm run render --path <workspace> --video <视频> [--bgm "a.mp3;b.mp3"] [--subt
 
 ## 系列配置（类型适配层）
 
-`config/series/{系列}.yaml` 控制分级表、命名模板、composition、subtitle_mode、TTS 音色、bgm_playlist，以及 overlay 字幕样式与画面适配。其中：
+`config/series/{系列}.yaml` 控制分级表、命名模板、subtitle_mode、TTS 音色，以及 overlay 字幕样式与画面适配。其中：
 
 - `subtitle`：overlay 字幕样式（`font_name`/`font_size`/`outline`/`margin_v`）+ 画面适配 `overlay_transform`（放大裁 UID）+ 底部羽化模糊遮罩 `overlay_mask`（含 `x`/`y`/`blur_sigma`/`feather_top`）。任务创建时经 `catalog.create_task` 继承到 task.json，任务/片段可覆盖。
 - `subtitle_mode`：`overlay`（默认，含底部模糊遮罩）/ `letterbox`（黑边电影画幅，未实现）。
 - 字体文件位于 `assets/fonts/`（当前仅 `LXGWWenKai-Medium.ttf`）。渲染时通过运行时临时 fontconfig（`FONTCONFIG_FILE`）命中，不注册系统字体，保证跨机器可复现。
+
+### BGM / 片头物料化（版本物料，非系列配置）
+
+BGM 与片头强版本相关，每版本都换，**不是系列级配置**，不写入系列 yaml。按版本目录组织物料，建任务时扫码生成清单：
+
+- 版本目录约定：`assets/bgm/V{版本}版本/`（音频：mp3/wav/m4a/flac）、`assets/intros/V{版本}版本/`（视频：mp4/mov/mkv）。
+- `mmm task-create` 传 `--bgm-dir <目录>` 扫该目录音频，**按文件名排序**生成 `task.json` 的 `bgm_playlist`；传 `--intro-dir <目录>` 扫视频，取**文件名排序首个**作为片头写入 `composition`。
+- 空目录 → 清单为 `[]`（BGM 走静音轨兜底、片头走无片头），不报错；目录不存在 → 报错。
+- 剪辑前配置确认时，Agent 读 task.json 已生成清单，列文件名给用户确认/调顺序；不传 `--bgm-dir` 时须在此时补扫（重跑 `task-create` 或手填 task.json）。
+- 下游 `stage_bgm` / `stage_compose` 只认文件清单，与来源无关；BGM 时长由 TTS 语音总长钉死（`render_segment` 片段时长 = `max(TTS时长, 0.5)`），不够循环、超过裁剪，无需单独配置。
 
 ### TTS 适配层
 

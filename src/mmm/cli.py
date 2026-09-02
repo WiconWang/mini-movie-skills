@@ -144,18 +144,29 @@ def task_create(
     task_id: str,
     videos: str = typer.Option(..., "--videos", help="逗号分隔的 video_id，顺序即剧情顺序"),
     series: str = typer.Option("", "--series", "-s", help="系列（缺省取首个视频的系列）"),
+    bgm_dir: str = typer.Option("", "--bgm-dir", help="版本 BGM 目录（如 assets/bgm/V1.6版本），扫码生成歌单"),
+    intro_dir: str = typer.Option("", "--intro-dir", help="版本片头目录（如 assets/intros/V1.6版本），取排序首个视频"),
 ) -> None:
-    """建任务：引用视频 + 生成 task.json（类型适配层配置继承系列默认）。"""
+    """建任务：引用视频 + 生成 task.json（类型适配层配置继承系列默认）。
+
+    BGM / 片头为版本物料，由 --bgm-dir / --intro-dir 扫码生成清单写入 task.json；
+    不传则留空，由 Skill 在剪辑前配置确认时补扫。
+    """
     from . import catalog
 
     video_ids = [v.strip() for v in videos.split(",") if v.strip()]
     try:
-        task = catalog.create_task(task_id, video_ids, series)
-    except KeyError as e:
+        task = catalog.create_task(task_id, video_ids, series,
+                                   bgm_dir=bgm_dir, intro_dir=intro_dir)
+    except (KeyError, FileNotFoundError) as e:
         typer.echo(f"✗ {e}", err=True)
         raise typer.Exit(1)
+    n_bgm = len(task.get("bgm_playlist", []))
+    n_intro = len(task.get("composition", []))
     typer.echo(f"✓ 任务已创建: {task_id}（{task['series']}，{len(video_ids)} 个视频，"
                f"目标 {task['target_minutes']} 分钟）")
+    typer.echo(f"  BGM 清单: {n_bgm} 首" + ("" if n_bgm else "（空，须配置确认时补扫）"))
+    typer.echo(f"  片头: {n_intro} 个" + ("" if n_intro else "（无）"))
     typer.echo(f"  产物: tasks/{task_id}/task.json")
     typer.echo(f"  下一步: 逐视频跑 mmm run shots/align/vision/index，然后 mmm run narrate {task_id}")
 

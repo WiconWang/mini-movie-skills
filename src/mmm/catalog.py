@@ -13,6 +13,53 @@ import yaml
 
 from .db import PROJECT_ROOT, init_db
 
+# 版本物料扫码：BGM / 片头按版本目录组织（assets/bgm/V{版本}版本/ 等），
+# task-create 时扫描目录生成文件清单写入 task.json，下游 stage 直接消费清单。
+_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"}
+_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+
+
+def _resolve_dir(dir_path: str) -> Path:
+    """版本目录路径解析：相对项目根 / 绝对路径。不存在则报错（不静默回退）。"""
+    p = Path(dir_path) if Path(dir_path).is_absolute() else PROJECT_ROOT / dir_path
+    if not p.is_dir():
+        raise FileNotFoundError(f"版本目录不存在: {p}")
+    return p
+
+
+def _relpath(p: Path) -> str:
+    """转相对项目根路径；不在项目根下则返回绝对路径。"""
+    try:
+        return str(p.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except ValueError:
+        return str(p.resolve())
+
+
+def scan_bgm_playlist(bgm_dir: str) -> list[str]:
+    """扫描版本 BGM 目录，按文件名排序返回音频文件清单（相对项目根路径）。
+
+    空目录返回 []（下游 stage_bgm 据此走静音轨兜底）。
+    """
+    d = _resolve_dir(bgm_dir)
+    files = sorted(
+        f for f in d.iterdir() if f.is_file() and f.suffix.lower() in _AUDIO_EXTS)
+    return [_relpath(f) for f in files]
+
+
+def scan_intros(intro_dir: str) -> list[dict]:
+    """扫描版本片头目录，取文件名排序首个视频作为 intro_special 片头。
+
+    空目录返回 []（下游 stage_compose 据此走无片头兜底）；
+    多个视频只取首个（约定每版本仅一个片头）。
+    """
+    d = _resolve_dir(intro_dir)
+    files = sorted(
+        f for f in d.iterdir() if f.is_file() and f.suffix.lower() in _VIDEO_EXTS)
+    if not files:
+        return []
+    return [{"type": "intro_special", "src": _relpath(files[0])}]
+
+
 CATALOG_YAML = PROJECT_ROOT / "catalog.yaml"
 CATALOG_EXAMPLE = PROJECT_ROOT / "catalog.example.yaml"
 
@@ -58,10 +105,12 @@ def add_video(video_id: str, series: str, version: str = "", chapter: str = "") 
     return {"lines": len(lines), "unvoiced": unvoiced, "bad_lines": bad}
 
 
-def create_task(task_id: str, video_ids: list[str], series: str = "") -> dict:
+def create_task(task_id: str, video_ids: list[str], series: str = "",
+                bgm_dir: str = "", intro_dir: str = "") -> dict:
     """建任务：task_map 登记（seq=给定顺序）+ tasks/{task_id}/task.json。
 
     系列配置（类型适配层）从 config/series/{series}.yaml 读取，缺省用内置默认。
+    BGM / 片头为版本物料，不来自系列 yaml：由 bgm_dir/intro_dir 扫码生成文件清单。
     """
     conn = init_db()
     conn.row_factory = sqlite3.Row
@@ -84,6 +133,10 @@ def create_task(task_id: str, video_ids: list[str], series: str = "") -> dict:
         cfg = yaml.safe_load(series_cfg.read_text(encoding="utf-8")) or {}
 
     v0 = known[video_ids[0]]
+    # BGM / 片头：版本物料扫码生成清单（不来自系列 yaml）。
+    # 不传目录 → 清单为空（下游兜底静音轨 / 无片头），由 Skill 在配置确认时补扫。
+    bgm_playlist = scan_bgm_playlist(bgm_dir) if bgm_dir else []
+    composition = scan_intros(intro_dir) if intro_dir else []
     task = {
         "task_id": task_id,
         "series": series,
@@ -92,10 +145,10 @@ def create_task(task_id: str, video_ids: list[str], series: str = "") -> dict:
         "videos": [{"video_id": v, "seq": i} for i, v in enumerate(video_ids)],
         "target_minutes": cfg.get("target_minutes", 15),
         "title_template": cfg.get("title_template", "{chapter}"),
-        "composition": cfg.get("composition", []),
+        "composition": composition,
         "subtitle_mode": cfg.get("subtitle_mode", "overlay"),
         "subtitle": cfg.get("subtitle") or {},
-        "bgm_playlist": cfg.get("bgm_playlist", []),
+        "bgm_playlist": bgm_playlist,
         "tts": cfg.get("tts") or {},
         "output": cfg.get("output") or {"width": 1920, "height": 1080, "fps": 30},
     }
