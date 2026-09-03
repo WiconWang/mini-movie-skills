@@ -290,6 +290,8 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
             "end": req["end"],
             "keep_audio": True,
             "note": req.get("note", ""),
+            "source": req.get("source", "time"),
+            "matched_text": req.get("matched_text", ""),
             "shot_ids": [],
             "candidates": [],
         }

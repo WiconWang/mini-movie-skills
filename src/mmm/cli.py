@@ -785,5 +785,145 @@ def find(keyword: str) -> None:
         typer.echo(f"{r['video_id']:<12} {r['series']} {r['version'] or ''} {r['chapter'] or ''}  → {r['source_path']}")
 
 
+@app.command("locate-keep")
+def locate_keep(
+    task_id: str = typer.Argument(..., help="任务 ID"),
+    quote: str = typer.Option(..., "--quote", "-q", help="用户台词，允许不完全准确"),
+    video: str = typer.Option("", "--video", help="限定视频；缺省自动搜已 ASR 的视频取最高分"),
+    pad: float = typer.Option(0.5, "--pad", help="区间前后各补秒数"),
+    write: bool = typer.Option(False, "--write", "-w", help="写入 task.json.keep_requirements（先备份）"),
+    force: bool = typer.Option(False, "--force", help="--write 时允许覆盖重叠旧区间"),
+) -> None:
+    """阶段2后：把用户台词（允许不完全准确）模糊定位到源视频本地秒，生成 keep_requirements。"""
+    from . import catalog
+    from .locate import DEFAULT_THRESHOLD, asr_path, load_words, locate_quote
+
+    videos = catalog.task_videos(task_id)
+    if not videos:
+        typer.echo(f"✗ 未找到任务: {task_id}", err=True)
+        raise typer.Exit(1)
+    target = [v for v in videos if not video or v["video_id"] == video]
+    if video and not target:
+        typer.echo(f"✗ 任务 {task_id} 无视频 {video}", err=True)
+        raise typer.Exit(1)
+
+    candidates = []
+    not_asr = []
+    for v in target:
+        p = asr_path(v["video_id"], task_id)
+        if not p:
+            not_asr.append(v["video_id"])
+            continue
+        r = locate_quote(load_words(p), quote, threshold=DEFAULT_THRESHOLD, pad=pad)
+        if r:
+            r["video_id"] = v["video_id"]
+            r["asr"] = str(p)
+            candidates.append(r)
+
+    if video and video in not_asr:
+        typer.echo(f"✗ {video} 尚未 ASR：先 `mmm run align {video}` 或 `mmm run align --task {task_id}`", err=True)
+        raise typer.Exit(1)
+    if not candidates:
+        if not_asr:
+            typer.echo("未命中。未 ASR 视频: " + ", ".join(not_asr) + "（先跑 align 再试）")
+        else:
+            typer.echo("未在任何已 ASR 视频中匹配到该台词。")
+        raise typer.Exit(1)
+
+    best = max(candidates, key=lambda r: r["score"])
+    for r in candidates:
+        typer.echo(f"  {r['video_id']:<12} start={r['start']:.3f} end={r['end']:.3f} "
+                   f"score={r['score']:.2f} 匹配={r['matched_text']}")
+    typer.echo(f"选中: {best['video_id']}  [{best['start']:.3f}, {best['end']:.3f}]  score={best['score']:.2f}")
+
+    if not write:
+        typer.echo("提示: 加 `--write` 写入 task.json.keep_requirements（自动备份原文件）。")
+        return
+
+    cfg_path = db.PROJECT_ROOT / "tasks" / task_id / "task.json"
+    if not cfg_path.exists():
+        typer.echo(f"✗ 缺少 {cfg_path}", err=True)
+        raise typer.Exit(1)
+    backup = cfg_path.with_name("task.json.bak.locatekeep")
+    shutil.copy2(cfg_path, backup)
+    typer.echo(f"已备份: {backup}")
+
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    reqs = list(cfg.get("keep_requirements") or [])
+    new = {"video_id": best["video_id"], "start": best["start"],
+           "end": best["end"], "note": quote}
+    overlap = [
+        i for i, r in enumerate(reqs)
+        if r.get("video_id") == best["video_id"]
+        and not (r["end"] <= new["start"] or r["start"] >= new["end"])
+    ]
+    if overlap and not force:
+        typer.echo("✗ 与已有保留区间重叠，加 `--force` 覆盖旧条", err=True)
+        raise typer.Exit(1)
+    if overlap and force:
+        reqs = [r for i, r in enumerate(reqs) if i not in overlap]
+    reqs.append(new)
+    cfg["keep_requirements"] = reqs
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    typer.echo(f"已写入 keep_requirements[{len(reqs) - 1}]: {json.dumps(new, ensure_ascii=False)}")
+
+
+
+@app.command("fix-keep")
+def fix_keep(
+    task_id: str = typer.Argument(..., help="任务 ID"),
+    slop: float = typer.Option(1.5, "--slop", help="区间内无词时放宽的秒数"),
+    write: bool = typer.Option(False, "--write", "-w", help="写回 task.json（先备份）"),
+) -> None:
+    """阶段2后：把 keep_requirements 的近似秒数吸附到 ASR 台词语音边界，并标注台词。"""
+    from .locate import asr_path, load_words, snap_interval
+
+    cfg_path = db.PROJECT_ROOT / "tasks" / task_id / "task.json"
+    if not cfg_path.exists():
+        typer.echo(f"✗ 缺少 {cfg_path}", err=True)
+        raise typer.Exit(1)
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    reqs = list(cfg.get("keep_requirements") or [])
+    if not reqs:
+        typer.echo("该任务没有 keep_requirements。")
+        return
+    videos = {v["video_id"] for v in cfg.get("videos", [])}
+    new_reqs = []
+    for r in reqs:
+        nr = dict(r)
+        vid = nr.get("video_id", "")
+        s0, e0 = float(nr["start"]), float(nr["end"])
+        if vid not in videos:
+            typer.echo(f"  跳过 {vid}：任务无此视频")
+            new_reqs.append(nr)
+            continue
+        p = asr_path(vid, task_id)
+        if not p:
+            typer.echo(f"  跳过 {vid}：未 ASR（先跑 `mmm run align`）")
+            new_reqs.append(nr)
+            continue
+        snap = snap_interval(load_words(p), s0, e0, slop=slop)
+        nr.setdefault("source", "time")
+        if snap:
+            moved = abs(snap["start"] - s0) > 0.05 or abs(snap["end"] - e0) > 0.05
+            nr["start"], nr["end"] = snap["start"], snap["end"]
+            nr["matched_text"] = snap["matched_text"]
+            typer.echo(f"  {vid} {s0:.2f}-{e0:.2f} {'->' if moved else '='} "
+                       f"{snap['start']:.2f}-{snap['end']:.2f}  台词={snap['matched_text']}")
+        else:
+            typer.echo(f"  {vid} {s0:.2f}-{e0:.2f} 保留（区间无台词）")
+            nr["matched_text"] = ""
+        new_reqs.append(nr)
+    if not write:
+        typer.echo("提示: 加 `--write` 写回 task.json（自动备份）。")
+        return
+    backup = cfg_path.with_name("task.json.bak.fixkeep")
+    shutil.copy2(cfg_path, backup)
+    typer.echo(f"已备份: {backup}")
+    cfg["keep_requirements"] = new_reqs
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    typer.echo(f"已写回 {len(new_reqs)} 条 keep_requirements。")
+
+
 if __name__ == "__main__":
     app()

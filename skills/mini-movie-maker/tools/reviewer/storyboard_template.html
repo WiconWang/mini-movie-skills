@@ -117,20 +117,27 @@ function refreshEst(){
   document.getElementById('counts').innerHTML = html;
 }
 
+function renderNarr(c){
+  if (c.type !== 'raw_insert') return (c.text || c.note || '').replace(/</g,'&lt;');
+  const src = c.source === 'quote' ? '【台词保留】' : '【时间保留】';
+  const qt = c.matched_text ? ` 台词:「${c.matched_text.replace(/</g,'&lt;')}」` : '';
+  return `${src}${qt} ${(c.text || c.note || '').replace(/</g,'&lt;')}`;
+}
 function render(){
   const board = document.getElementById('board');
   board.innerHTML = '';
   edl.clips.forEach((c, i) => {
     const div = document.createElement('div');
     div.className = 'clip' + (c.type === 'raw_insert' ? ' raw_insert' : '');
+    const rawSrc = c.source === 'quote' ? '台词保留' : '时间保留';
     const badge = c.type === 'raw_insert'
-      ? '<span class="badge raw">高光·原声</span>'
+      ? '<span class="badge raw">高光·原声</span><span class="badge" style="background:#e0a458;color:#1a1a1a">'+rawSrc+'</span>'
       : `<span class="badge ${c.class||'A'}">${c.class||'A'}级</span>`;
     div.innerHTML = `
       <div class="frames">${(c.frames||[]).map(f=>`<img src="${f}" loading="lazy">`).join('') || '<span class="meta">无帧</span>'}</div>
       <div class="body">
         <div class="headrow">${badge}<span class="time">${c.video_id} · ${fmt(c.start)} → ${fmt(c.end)}（源 ${(c.end-c.start).toFixed(1)}s${c.keep_audio ? '' : ` · 解说约 ${clipDuration(c).toFixed(1)}s`}）</span></div>
-        <div class="narr">${(c.text || c.note || '').replace(/</g,'&lt;')}</div>
+        <div class="narr">${renderNarr(c)}</div>
         <div class="ops">
           <button onclick="toggleCands(${i})">换镜头</button>
           <button onclick="toggleRange(${i})">调区间</button>

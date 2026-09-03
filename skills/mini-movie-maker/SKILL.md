@@ -17,6 +17,8 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 
 > **shots / vision 可提前于任务创建**：这两个阶段是 video 级，仅依赖 `source.mp4`（vision 还需 shots 产物），不读 task.json、不读 BGM/黑边等配置。拿到视频即可先跑，待配置确认后再 `add → task-create → index`，index 自动复用已有 `shots_meta.json`。详见「视觉预处理（可提前）」。
 
+> **台词定位须在 align 之后**：`mmm locate-keep` 依赖阶段2 `asr.json`，用于把「保留某句台词」的自然语言翻译成 `keep_requirements` 时间区间；目标视频未 ASR 时先 `mmm run align`。
+
 ## 闸口协议（铁律）
 
 1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`。dry 模式须提示"这是 LOW LLM 出的验证小样稿，精做终稿需 `--profile prod` 重跑"
@@ -68,6 +70,18 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 
 用户可用自然语言指定「原始素材哪些位置要保留原声/保留画面」，写入 `tasks/{task_id}/task.json` 的 `keep_requirements` 数组，select 阶段自动生成 raw_insert 片段（原声原画）并入 EDL。
 
+**两种指定方式**
+- 时间区间：直接给 `start/end`（如上），写入 task.json。
+- 台词定位：用户只说台词（允许不完全准确），程序在目标视频
+  `workspace/{video_id}/asr.json` 的词级时间戳里模糊匹配
+  （去标点/空白 → 精确子串 → 编辑距离兜底），回填
+  `{video_id, start, end}`，`note` 写用户原话。
+
+**时序铁律**：台词定位依赖阶段2 ASR 产物，必须在 `mmm run align`
+之后执行；目标视频尚未 ASR 时，命令提示「先跑 align」。ASR 为本地
+faster-whisper，不按量计费，但需模型权重与转录耗时，故不隐式触发。
+`asr.json` 已是源视频本地秒，定位结果可直接写入 keep_requirements。
+
 ```json
 "keep_requirements": [
   {"video_id": "gs-16-p1", "start": 300.5, "end": 320.0, "note": "第5分钟战斗原声"},
@@ -79,7 +93,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 - 区间内不排解说句；解说片段与保留区间重叠时自动裁剪避让
 - 插入后**后续内容整体后移**（成片时间轴自动累计，零成本）
 - BGM 全局 50%，raw_insert 段额外压低（-26dB），**区间结束自动恢复**
-- 操作方式：用户自然语言说明 → 写入 task.json → 重跑 `mmm run select --task <id>` + `mmm run render --task <id>`
+- 操作方式：用户自然语言说明 →（时间区间直接写 / 台词经 `mmm locate-keep` 定位）→ 写入 task.json → 重跑 `mmm run select --task <id>` + `mmm run render --task <id>`
 
 ## 命令手册
 
@@ -90,6 +104,7 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 | `mmm task-create <task_id> --videos a,b,c [--series] [--bgm-dir <目录>] [--intro-dir <目录>]` | 建任务（顺序即 seq），生成 task.json。`--bgm-dir`/`--intro-dir` 扫版本目录生成 BGM 歌单与片头清单（见「BGM/片头物料化」） |
 | `mmm run shots <video_id>` | 阶段1：镜头切分 + 黑白屏检测（仅需 source.mp4，可提前于任务创建） |
 | `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐。`--task` 模式复用各视频已落盘的 `asr.json`，转录过的不重跑 |
+| `mmm locate-keep <task_id> --quote "<台词>" [--video <video_id>]` | 阶段2后：把用户台词（允许不完全准确）模糊定位到源视频本地秒，输出/写入 `keep_requirements`；未 ASR 提示先跑 `align` |
 | `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5）；仅需 source.mp4 + shots 产物，可提前于任务创建 |
 | `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
 | `mmm run narrate <task_id> [--profile dry\|prod]` | 阶段5：解说稿生成 → 闸口1。`--profile dry`（默认）HIGH 融合环节用 LOW LLM 省钱出小样；`prod` 用 HIGH LLM 精做终稿 |
