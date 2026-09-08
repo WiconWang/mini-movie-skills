@@ -38,3 +38,4 @@ build/
 # ===== 本地记忆/内部状态（不提交）=====
 .workbuddy/
 :memory:.ses
+experiments/

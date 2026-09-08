@@ -13,14 +13,19 @@ from pathlib import Path
 from .llm import LLMEndpoint, estimate_tokens, load_endpoint
 
 CHARS_PER_MINUTE = 275
-SCHEMA = "story_beats_v1"
+SCHEMA = "story_beats_v2"
 
 _LOW_EXTRACTION_INSTRUCTIONS = """1. 【素材边界】只能使用素材索引中出现的信息，不虚构事实。可以在证据支持时标注推测，但必须说明置信度。
 2. 【证据完整】按时间顺序抽取剧情节拍，完整覆盖起因、发展、转折、冲突和结局。不要为了摘要漂亮而删除潜在反转、身份揭露或后果。
 3. 【因果人物】保留人物规范名、身份变化、动机、因果链和事件影响；过程性对话可以合并，但关键结论不能丢。
 4. 【关键台词】身份揭露、重大反转、强烈情绪和能立住人物个性的台词保留原文；一般过程性对话可以转述。
 5. 【引用防伪】每个 beat 必须给出 related_line_ids，且只能引用素材索引中真实存在、非 unvoiced 的台词行 ID。key_quotes 的 line_id 也必须真实存在。
-6. 【不要写稿】不要优化口播节奏、文笔、人称或成稿句式。summary 使用中性、完整、可核查的事件描述。"""
+6. 【不要写稿】不要优化口播节奏、文笔、人称或成稿句式。summary 使用中性、完整、可核查的事件描述。
+7. 【per-line 叙事质量】对每个 beat 的 related_line_ids 里每条台词，在 line_marks 中标注 quality:
+   - great: 该台词有独立叙事价值，提取后能与其他片段串联成整体故事（情绪爆点/身份揭露/反转/点题/立人设）
+   - good: 推进剧情但有上下文依赖，单独提取略损
+   - skip: 过程性应答/重复/无信息
+   只判断叙事维度，不考虑画面/UI。line_marks 的 line_id 必须取自本 beat 的 related_line_ids。给出简短 reason。"""
 
 _HIGH_NARRATION_STYLE = """1. 只讲述证据中明确呈现的信息（对话、过场、文本、环境），不添加证据之外的事实。可以在证据基础上做合理推断，推断必须服务于解释角色动机或填补逻辑空隙，不能用于制造额外情节。推断用叙述语气自然带过（如“看起来”“多半是”“难道说”），不要写成报告腔。
 2. 【玩家视角】站在游戏操作者视角讲述，“我们”指代玩家扮演的主角；主角的调查、行动、发现、决定都从“我们”出发，其他角色用名字或称谓第三人称描述。
@@ -50,6 +55,7 @@ _LOW_OUTPUT_SCHEMA_HINT = """{
       "cause": "直接原因，未知则为空字符串",
       "effect": "事件影响，未知则为空字符串",
       "key_quotes": [{"speaker": "角色名", "text": "关键台词原文", "line_id": 1}],
+      "line_marks": [{"line_id": 1, "quality": "great", "reason": "情绪爆点+点题"}],
       "related_line_ids": [1, 2],
       "importance": "core/supporting/background",
       "confidence": "high/medium/low"
@@ -441,6 +447,48 @@ def _timeline_line_ids(timeline: dict) -> set[int]:
     }
 
 
+def _normalize_line_marks(marks, related_ids: list[int], beat_id) -> list[dict]:
+    """校验并规范化 line_marks（v2 schema）：防伪红线保住、格式容错放宽。
+
+    - line_marks 引用 related_line_ids 之外的行 ID → 丢弃该条 + 警告（越界引用，
+      实测 LLM 幻觉率约 25%；丢弃只导致漏选不导致误选——selector 的 lines_by_id
+      查不到该 line_id 自然落空，不会 seek 错位。原 raise 设计会让整 chunk LLM
+      调用作废，代价过高）
+    - quality 非法（非 great/good/skip）→ 降为 skip + 警告（用词漂移无害）
+    - related_line_ids 内某行漏标 → 不补造假（等价 skip，selector 候选池自然落空）
+    - line_marks 整体缺失/非数组 → 返回空列表（容错，该 beat 所有行等价 skip）
+    """
+    if marks is None:
+        return []
+    if not isinstance(marks, list):
+        print(f"⚠ beat {beat_id} line_marks 非数组，忽略")
+        return []
+    valid_quality = {"great", "good", "skip"}
+    refs_set = set(related_ids)
+    seen: set[int] = set()
+    normalized: list[dict] = []
+    for mark in marks:
+        if not isinstance(mark, dict):
+            continue
+        lid = mark.get("line_id")
+        if lid is None or lid in seen:
+            continue
+        if lid not in refs_set:
+            print(f"⚠ beat {beat_id} line_marks 越界引用 line {lid}（不在 related_line_ids），丢弃该条")
+            continue
+        seen.add(lid)
+        q = mark.get("quality")
+        if q not in valid_quality:
+            print(f"⚠ beat {beat_id} line {lid} quality 非法 {q!r}，降为 skip")
+            q = "skip"
+        normalized.append({
+            "line_id": lid,
+            "quality": q,
+            "reason": str(mark.get("reason", ""))[:200],
+        })
+    return normalized
+
+
 def _validate_low_segment(data: dict, plan: SegmentPlan) -> dict:
     required = {
         "video_id": plan.video_id,
@@ -469,6 +517,8 @@ def _validate_low_segment(data: dict, plan: SegmentPlan) -> dict:
         for quote in beat.get("key_quotes", []):
             if quote.get("line_id") not in valid_ids:
                 raise ValueError(f"beat {beat_id} key_quotes 引用未知台词行: {quote.get('line_id')}")
+        beat["line_marks"] = _normalize_line_marks(
+            beat.get("line_marks"), refs, beat_id)
         if not str(beat.get("summary", "")).strip():
             raise ValueError(f"beat {beat_id} summary 为空")
         if beat.get("importance") not in {"core", "supporting", "background"}:

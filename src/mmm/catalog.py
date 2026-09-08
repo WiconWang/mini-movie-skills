@@ -106,11 +106,13 @@ def add_video(video_id: str, series: str, version: str = "", chapter: str = "") 
 
 
 def create_task(task_id: str, video_ids: list[str], series: str = "",
-                bgm_dir: str = "", intro_dir: str = "") -> dict:
+                bgm_dir: str = "", intro_dir: str = "",
+                pipeline_mode: str = "narrate") -> dict:
     """建任务：task_map 登记（seq=给定顺序）+ tasks/{task_id}/task.json。
 
     系列配置（类型适配层）从 config/series/{series}.yaml 读取，缺省用内置默认。
     BGM / 片头为版本物料，不来自系列 yaml：由 bgm_dir/intro_dir 扫码生成文件清单。
+    pipeline_mode：narrate（A 模式，缺省）/ raw（B 模式，原声高光直拼）。
     """
     conn = init_db()
     conn.row_factory = sqlite3.Row
@@ -120,6 +122,8 @@ def create_task(task_id: str, video_ids: list[str], series: str = "",
         raise KeyError(f"video_id 未登记: {', '.join(missing)}（先 mmm add 或 catalog-import）")
     if not series:
         series = known[video_ids[0]]["series"]
+    if pipeline_mode not in ("narrate", "raw"):
+        raise ValueError(f"pipeline_mode 只支持 narrate/raw，当前: {pipeline_mode}")
 
     conn.execute("DELETE FROM task_map WHERE task_id=?", (task_id,))
     for seq, vid in enumerate(video_ids):
@@ -139,6 +143,7 @@ def create_task(task_id: str, video_ids: list[str], series: str = "",
     composition = scan_intros(intro_dir) if intro_dir else []
     task = {
         "task_id": task_id,
+        "pipeline_mode": pipeline_mode,
         "series": series,
         "version": v0.get("version") or cfg.get("version", ""),
         "chapter": v0.get("chapter") or cfg.get("chapter", ""),
@@ -146,12 +151,21 @@ def create_task(task_id: str, video_ids: list[str], series: str = "",
         "target_minutes": cfg.get("target_minutes", 15),
         "title_template": cfg.get("title_template", "{chapter}"),
         "composition": composition,
-        "subtitle_mode": cfg.get("subtitle_mode", "overlay"),
+        "subtitle_mode": "none" if pipeline_mode == "raw" else cfg.get("subtitle_mode", "overlay"),
         "subtitle": cfg.get("subtitle") or {},
         "bgm_playlist": bgm_playlist,
         "tts": cfg.get("tts") or {},
         "output": cfg.get("output") or {"width": 1920, "height": 1080, "fps": 30},
     }
+    if pipeline_mode == "raw":
+        # B 模式挑选配置缺省值（pipeline_mode=raw 时生效，详见方案 §4.2）
+        task["raw_select"] = {
+            "quality_levels": ["great"],
+            "buffer_sec": 0.0,
+            "min_shot_class": "B",
+            "prefer_ui_types": ["dialogue"],
+            "auto_low_extract": True,
+        }
     task_dir = PROJECT_ROOT / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "task.json").write_text(

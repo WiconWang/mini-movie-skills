@@ -146,25 +146,29 @@ def task_create(
     series: str = typer.Option("", "--series", "-s", help="系列（缺省取首个视频的系列）"),
     bgm_dir: str = typer.Option("", "--bgm-dir", help="版本 BGM 目录（如 assets/bgm/V1.6版本），扫码生成歌单"),
     intro_dir: str = typer.Option("", "--intro-dir", help="版本片头目录（如 assets/intros/V1.6版本），取排序首个视频"),
+    pipeline_mode: str = typer.Option("narrate", "--pipeline-mode", help="narrate（A 模式解说）/ raw（B 模式原声高光直拼）"),
 ) -> None:
     """建任务：引用视频 + 生成 task.json（类型适配层配置继承系列默认）。
 
     BGM / 片头为版本物料，由 --bgm-dir / --intro-dir 扫码生成清单写入 task.json；
     不传则留空，由 Skill 在剪辑前配置确认时补扫。
+    pipeline_mode=raw（B 模式）时 subtitle_mode 缺省 none、写入 raw_select 配置块。
     """
     from . import catalog
 
     video_ids = [v.strip() for v in videos.split(",") if v.strip()]
     try:
         task = catalog.create_task(task_id, video_ids, series,
-                                   bgm_dir=bgm_dir, intro_dir=intro_dir)
-    except (KeyError, FileNotFoundError) as e:
+                                   bgm_dir=bgm_dir, intro_dir=intro_dir,
+                                   pipeline_mode=pipeline_mode)
+    except (KeyError, FileNotFoundError, ValueError) as e:
         typer.echo(f"✗ {e}", err=True)
         raise typer.Exit(1)
     n_bgm = len(task.get("bgm_playlist", []))
     n_intro = len(task.get("composition", []))
+    mode_label = "B 原声高光直拼" if pipeline_mode == "raw" else "A 解说短视频"
     typer.echo(f"✓ 任务已创建: {task_id}（{task['series']}，{len(video_ids)} 个视频，"
-               f"目标 {task['target_minutes']} 分钟）")
+               f"模式 {mode_label}，目标 {task['target_minutes']} 分钟）")
     typer.echo(f"  BGM 清单: {n_bgm} 首" + ("" if n_bgm else "（空，须配置确认时补扫）"))
     typer.echo(f"  片头: {n_intro} 个" + ("" if n_intro else "（无）"))
     typer.echo(f"  产物: tasks/{task_id}/task.json")
@@ -380,7 +384,11 @@ def run_narrate(
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
     dry_run: bool = typer.Option(False, "--dry-run", help="仅输出请求计划，不发起 LLM 请求"),
 ) -> None:
-    """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。"""
+    """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。
+
+    B 模式（pipeline_mode=raw）任务跳过此命令：不写解说终稿，per-line quality
+    标注由 select --mode raw 内部自动跑 narrate-low-only 兜底（0 次 high 调用）。
+    """
     from . import stage_index, stage_narrate
 
     if timeline:
@@ -388,6 +396,13 @@ def run_narrate(
         out_dir = timeline_path.parent
     elif task_id:
         out_dir = db.PROJECT_ROOT / "tasks" / task_id
+        # B 模式任务跳过 narrate（high 终稿）——quality 标注由 select-raw 兜底
+        cfg = json.loads((out_dir / "task.json").read_text(encoding="utf-8")) \
+            if (out_dir / "task.json").exists() else {}
+        if cfg.get("pipeline_mode") == "raw":
+            typer.echo(f"⏭ 任务 {task_id} 为 B 模式（pipeline_mode=raw），跳过 narrate（high 终稿）；"
+                       "per-line quality 标注由 mmm run select --mode raw 自动兜底")
+            return
         timeline_path = out_dir / "global_timeline.json"
         if not timeline_path.exists():
             # 阶段4.5：多视频合流（单视频任务同样走此路径，结构统一）
@@ -441,30 +456,77 @@ def run_select(
     video_id: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     task: str = typer.Option("", "--task", help="任务模式：读 tasks/{task_id} 的 narration + 全局时间轴"),
+    mode: str = typer.Option("", "--mode", help="narrate（A 解说选片，缺省）/ raw（B 原声高光直拼，自动跑 low-only 标注）"),
     chars_per_sec: float = typer.Option(4.5, "--chars-per-sec", help="TTS 语速估算（字/秒）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
-    """阶段6：选片段 + 自检回环 + 分镜板。完成后进入闸口2，等待人工确认。"""
-    from . import stage_select
+    """阶段6：选片段 + 自检回环 + 分镜板。完成后进入闸口2，等待人工确认。
 
+    --mode raw（或 task.json pipeline_mode=raw）→ stage_select_raw：quality + 画面
+    双维度选片，生成全 raw_insert EDL；无 segments 时自动跑 narrate-low-only 兜底。
+    """
+    select_mode = mode
     if task:
         out_dir = db.PROJECT_ROOT / "tasks" / task
         if _skip_if_done(task, "select", out_dir / "edl.json",
                          out_dir / "storyboard.html", force=force):
             return
-        summary = stage_select.run(out_dir, task, timeline_name="global_timeline.json",
-                                   exclude_task=task, chars_per_sec=chars_per_sec)
+        # --mode 缺省时回退到 task.json pipeline_mode（B 任务默认走 raw）
+        if not select_mode:
+            cfg = json.loads((out_dir / "task.json").read_text(encoding="utf-8"))
+            select_mode = "raw" if cfg.get("pipeline_mode") == "raw" else "narrate"
+        if select_mode == "raw":
+            from . import stage_select_raw, stage_index
+
+            cfg = json.loads((out_dir / "task.json").read_text(encoding="utf-8"))
+            rs = cfg.get("raw_select") or {}
+            keep_reqs = cfg.get("keep_requirements", [])
+            # B 模式跳过 narrate，global_timeline.json 由 build_global 兜底生成
+            # （A 模式借 narrate 入口顺带调；B 模式无此入口，select 前补一次，秒级复用 per-video 产物）
+            timeline_path = out_dir / "global_timeline.json"
+            if not timeline_path.exists():
+                stats = stage_index.build_global(task)
+                typer.echo(f"✓ 全局时间轴: {stats['shots']} 镜头, 总时长 {stats['duration']}s, "
+                           f"分级 {stats['by_class']}")
+            summary = stage_select_raw.run(
+                out_dir, task, timeline_name="global_timeline.json",
+                quality_levels=rs.get("quality_levels"),
+                buffer_sec=rs.get("buffer_sec", 0.0),
+                min_shot_class=rs.get("min_shot_class", "B"),
+                prefer_ui_types=rs.get("prefer_ui_types"),
+                keep_requirements=keep_reqs or None,
+                exclude_task=task,
+            )
+            typer.echo(f"✓ B 模式 EDL 生成完成: {summary['clips']} 片段, "
+                       f"源视频总长 {summary['total_source_seconds']:.1f}s"
+                       f"（跳过无时间戳 {summary['skipped_no_timestamp']}，"
+                       f"画面不达标 {summary['skipped_low_class']}）")
+        else:
+            from . import stage_select
+
+            summary = stage_select.run(out_dir, task, timeline_name="global_timeline.json",
+                                       exclude_task=task, chars_per_sec=chars_per_sec)
+            typer.echo(f"✓ EDL 生成完成: {summary['clips']} 片段, "
+                       f"源视频总长 {summary['total_source_seconds']:.1f}s, "
+                       f"复用排除 {summary['excluded_used_shots']} 个已登记镜头")
+            if summary["needs_review"]:
+                typer.echo(f"  ⚠ {summary['needs_review']} 个片段候选被占用耗尽，需闸口2人工复核")
         db.record_job(task, "select", "gate_waiting", "等待闸口2人工审阅 storyboard.html")
-        label = task
-    else:
-        out_dir = Path(path) if path else db.PROJECT_ROOT / "workspace" / video_id
-        if not (out_dir / "narration.json").exists():
-            typer.echo(f"✗ 缺少 narration.json: {out_dir}", err=True)
-            raise typer.Exit(1)
-        label = video_id or out_dir.name
-        summary = stage_select.run(out_dir, label,
-                                   workspace_of=lambda _vid: out_dir,
-                                   chars_per_sec=chars_per_sec)
+        typer.echo(f"  产物: {summary['edl']}, {summary['storyboard']}")
+        typer.echo("  ⏸ 闸口2：请审阅 storyboard.html，确认或调整后再继续阶段7")
+        return
+
+    # 冒烟路径（无 task）
+    out_dir = Path(path) if path else db.PROJECT_ROOT / "workspace" / video_id
+    if not (out_dir / "narration.json").exists():
+        typer.echo(f"✗ 缺少 narration.json: {out_dir}", err=True)
+        raise typer.Exit(1)
+    label = video_id or out_dir.name
+    from . import stage_select
+
+    summary = stage_select.run(out_dir, label,
+                               workspace_of=lambda _vid: out_dir,
+                               chars_per_sec=chars_per_sec)
     typer.echo(f"✓ EDL 生成完成: {summary['clips']} 片段, "
                f"源视频总长 {summary['total_source_seconds']:.1f}s, "
                f"复用排除 {summary['excluded_used_shots']} 个已登记镜头")
@@ -481,7 +543,10 @@ def run_tts_plan(
     profile: str = typer.Option("", "--profile", help="dry/prod；缺省用 task.json tts.profile"),
     force: bool = typer.Option(False, "--force", help="重新生成计划并使旧审批失效"),
 ) -> None:
-    """阶段6.5：LLM 生成 TTS 表演计划 → 闸口3，等待用户确认。"""
+    """阶段6.5：LLM 生成 TTS 表演计划 → 闸口3，等待用户确认。
+
+    B 模式（pipeline_mode=raw）任务跳过：无解说配音，不产 TTS。
+    """
     from .tts import runtime as tts_runtime
     from .llm import LLMCallError
 
@@ -490,6 +555,11 @@ def run_tts_plan(
         raise typer.Exit(1)
 
     task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    cfg = json.loads((task_dir / "task.json").read_text(encoding="utf-8")) \
+        if (task_dir / "task.json").exists() else {}
+    if cfg.get("pipeline_mode") == "raw":
+        typer.echo(f"⏭ 任务 {task_id} 为 B 模式（pipeline_mode=raw），跳过 tts-plan（无解说配音）")
+        return
     if _skip_if_done(
         task_id, "tts_plan", task_dir / tts_runtime.PLAN_PATH_NAME,
         task_dir / tts_runtime.HTML_PATH_NAME, force=force,
@@ -574,7 +644,10 @@ def run_tts(
     task_id: str = typer.Option("", "--task"),
     force: bool = typer.Option(False, "--force", help="忽略有效片段缓存，重新合成"),
 ) -> None:
-    """阶段6.6：执行已批准的完整合成，并切回片段级 WAV。"""
+    """阶段6.6：执行已批准的完整合成，并切回片段级 WAV。
+
+    B 模式（pipeline_mode=raw）任务跳过：无解说配音，不产 TTS。
+    """
     from .tts import runtime as tts_runtime
 
     if not task_id:
@@ -582,6 +655,11 @@ def run_tts(
         raise typer.Exit(1)
 
     task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    cfg = json.loads((task_dir / "task.json").read_text(encoding="utf-8")) \
+        if (task_dir / "task.json").exists() else {}
+    if cfg.get("pipeline_mode") == "raw":
+        typer.echo(f"⏭ 任务 {task_id} 为 B 模式（pipeline_mode=raw），跳过 tts（无解说配音）")
+        return
     artifact_path = task_dir / tts_runtime.ARTIFACTS_PATH_NAME
     if not force and _skip_if_done(task_id, "tts", artifact_path, force=force):
         return
@@ -643,6 +721,7 @@ def run_render(
 
         bgm_list = _parse_bgm_paths(bgm) if bgm else cfg.get("bgm_playlist", [])
         subtitle_mode = subtitle or cfg.get("subtitle_mode", "overlay")
+        pipeline_mode = cfg.get("pipeline_mode", "narrate")
     elif path and video:
         work_dir, video_p = Path(path), Path(video)
         videos = {work_dir.name: video_p}
@@ -669,7 +748,8 @@ def run_render(
 
     summary = stage_render.run(work_dir, videos, out_path, task_id=task or "",
                                bgm_playlist=bgm_list if bgm_list else None,
-                               subtitle_mode=subtitle_mode)
+                               subtitle_mode=subtitle_mode,
+                               pipeline_mode=pipeline_mode if task else "narrate")
     typer.echo(f"✓ 渲染完成: {summary['clips']} 片段, 成片时长 {summary['duration']}s")
     if summary.get("bgm"):
         typer.echo(f"  BGM: {summary['bgm']}")

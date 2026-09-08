@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,6 +28,10 @@ ENV_PREFIXES = {
     "vision": "MMM_VISION_",
     "tts_plan": "MMM_TTS_PLAN_",
 }
+
+# opencode zen go 网关（2026-09 起）要求 x-opencode-session 头做会话路由；
+# 缺失时返回 400 MissingSessionID。同进程共享一个 session id（任意 UUID 即可）。
+_OPENCODE_SESSION_ID = f"mmm-{uuid.uuid4().hex[:12]}"
 
 LOG_PATH = PROJECT_ROOT / "logs" / "llm_calls.jsonl"
 _LOG_LOCK = threading.Lock()
@@ -240,6 +245,7 @@ def chat(endpoint: LLMEndpoint, messages: list[dict], *, max_tokens: int,
                 "Authorization": f"Bearer {endpoint.api_key}",
                 "Content-Type": "application/json",
                 "User-Agent": "curl/8.7.1",
+                "x-opencode-session": _OPENCODE_SESSION_ID,
             },
         )
         retryable = False

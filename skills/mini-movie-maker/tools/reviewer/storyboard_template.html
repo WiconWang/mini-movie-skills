@@ -31,6 +31,9 @@
   .badge.B { background:#d9b93a; color:#221d04; } .badge.A { background:#5a6270; color:#fff; }
   .badge.raw { background:var(--gold); color:#241703; }
   .badge.narration { background:var(--accent); color:#0b1523; }
+  .badge.q-great { background:#2fbf71; color:#0c2015; }
+  .badge.q-good { background:#3f8cff; color:#0b1523; }
+  .badge.q-keep { background:#8e5cf7; color:#fff; }
   .time { color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
   .narr { margin:8px 0 10px; font-size:15px; line-height:1.75; color:#dde1ea; }
   .narr .seg { background:var(--card2); border-radius:6px; padding:0 6px; color:var(--dim); font-size:12px; }
@@ -119,6 +122,12 @@ function refreshEst(){
 
 function renderNarr(c){
   if (c.type !== 'raw_insert') return (c.text || c.note || '').replace(/</g,'&lt;');
+  if (c.quality) {
+    // B 模式高光段：quality 徽章 + reason 悬浮 + 原文/说话人
+    const spk = c.speaker ? `<span class="seg">${c.speaker.replace(/</g,'&lt;')}</span> ` : '';
+    const txt = (c.text || '').replace(/</g,'&lt;');
+    return `${spk}${txt}`;
+  }
   const src = c.source === 'quote' ? '【台词保留】' : '【时间保留】';
   const qt = c.matched_text ? ` 台词:「${c.matched_text.replace(/</g,'&lt;')}」` : '';
   return `${src}${qt} ${(c.text || c.note || '').replace(/</g,'&lt;')}`;
@@ -130,8 +139,9 @@ function render(){
     const div = document.createElement('div');
     div.className = 'clip' + (c.type === 'raw_insert' ? ' raw_insert' : '');
     const rawSrc = c.source === 'quote' ? '台词保留' : '时间保留';
+    const qBadge = c.quality ? `<span class="badge q-${c.quality}" title="${(c.reason||'').replace(/"/g,'&quot;')}">${c.quality}</span>` : '';
     const badge = c.type === 'raw_insert'
-      ? '<span class="badge raw">高光·原声</span><span class="badge" style="background:#e0a458;color:#1a1a1a">'+rawSrc+'</span>'
+      ? `${qBadge}<span class="badge raw">高光·原声</span>${c.quality ? '' : `<span class="badge" style="background:#e0a458;color:#1a1a1a">${rawSrc}</span>`}`
       : `<span class="badge ${c.class||'A'}">${c.class||'A'}级</span>`;
     div.innerHTML = `
       <div class="frames">${(c.frames||[]).map(f=>`<img src="${f}" loading="lazy">`).join('') || '<span class="meta">无帧</span>'}</div>
