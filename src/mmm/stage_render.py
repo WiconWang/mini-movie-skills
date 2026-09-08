@@ -394,11 +394,14 @@ def _burn_drawtext(video: Path, dt_filter: str, out: Path) -> None:
 
 def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         task_id: str = "", bgm_playlist: list[str] | None = None,
-        subtitle_mode: str = "overlay") -> dict:
+        subtitle_mode: str = "overlay",
+        pipeline_mode: str = "narrate") -> dict:
     """按 edl.json 渲染成片。videos: video_id → 源视频路径（多视频任务各片段可来自不同源）。
 
     task_id 非空时：渲染成功后登记 footage_usage（以导出时 EDL 为准）
     并归档 edl.final.json 到输出目录（设计文档 §4 阶段7 单向数据流）。
+    pipeline_mode=raw（B 模式）：跳过 TTS 计划闸口（EDL 全 raw_insert，无 TTS 片段；
+    B 任务无 tts_plan.json，走 A 模式闸口会因 load_plan_document 抛 FileNotFoundError）。
     """
     edl = json.loads((work_dir / "edl.json").read_text())
     clips = edl["clips"]
@@ -430,8 +433,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     seg_dir.mkdir(parents=True, exist_ok=True)
 
     # 任务模式必须经过统一 TTS 计划闸口；有效片段缓存由 runtime 按指纹校验。
+    # B 模式（pipeline_mode=raw）EDL 全 raw_insert，无 TTS 片段，跳过该闸口。
     prepared_tts: dict[int, Path] | None = None
-    if task_id:
+    if task_id and pipeline_mode != "raw":
         from .tts import runtime as tts_runtime
 
         prepared_tts = tts_runtime.prepare_render_artifacts(work_dir, tts_cfg)

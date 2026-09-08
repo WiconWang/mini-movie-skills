@@ -1,6 +1,6 @@
 ---
 name: mini-movie-maker
-description: 长视频浓缩工作流。将几小时长视频（+准确台词）浓缩为十几分钟解说短视频：镜头检测→台词对齐→视觉理解→写稿→选片→合成，双导出（MP4/剪映草稿）。当用户要求处理视频、生成解说视频、跑浓缩管线时使用。
+description: 长视频浓缩工作流。支持两种模式：A 模式（TTS 解说短视频）与 B 模式（原声高光直拼，无解说无配音，LOW LLM 标注挑选，成本低）。当用户要求处理视频、生成解说视频、原声直拼、跑浓缩管线时使用。
 ---
 
 # mini-movie-maker
@@ -8,21 +8,60 @@ description: 长视频浓缩工作流。将几小时长视频（+准确台词）
 设计文档：`docs/2026/0817-长视频浓缩工作流.md`（唯一事实源）
 术语表：`CONTEXT.md`　物料契约：`docs/2026/0817-物料规范.md`
 全项目流程图：`docs/2026/0828-全项目流程图.md`
+B 模式方案：`docs/2026/0905-B模式原声高光直拼方案.md`（v1.1.0 评审定稿）
 
 ## 流程总览
 
 ```
-登记(add) → 建任务(task-create) → shots → align → vision → index → narrate →【闸口1】→ select →【闸口2】→ tts-plan →【闸口3】→ tts → render / export-jianying
+A 模式：登记 → 建任务 → shots → align → vision → index → narrate →【闸口1】→ select →【闸口2】→ tts-plan →【闸口3】→ tts → render / export-jianying
+B 模式：登记 → 建任务 → shots → align → vision → index → select --mode raw →【闸口2】→ render
+                                                    （narrate/tts 全跳过，0 次 HIGH LLM）
 ```
 
 > **shots / vision 可提前于任务创建**：这两个阶段是 video 级，仅依赖 `source.mp4`（vision 还需 shots 产物），不读 task.json、不读 BGM/黑边等配置。拿到视频即可先跑，待配置确认后再 `add → task-create → index`，index 自动复用已有 `shots_meta.json`。详见「视觉预处理（可提前）」。
 
 > **台词定位须在 align 之后**：`mmm locate-keep` 依赖阶段2 `asr.json`，用于把「保留某句台词」的自然语言翻译成 `keep_requirements` 时间区间；目标视频未 ASR 时先 `mmm run align`。
 
+## A/B 模式选择（任务开始必问）
+
+任务开始时 Agent 必须先判断/询问 A/B 模式：
+
+1. **解析自然语言**：用户提到"原声高光/不要解说/原声直拼/原文对白拼接" → 直接 B；提到"解说/总结/配音/TTS" → 直接 A
+2. **不明确时 `AskUserQuestion`**：附 A/B 简述（A：LLM 解说+TTS 配音，链路重；B：原声高光直拼，无解说无配音，LOW LLM 标注挑选，0 次 HIGH 调用，成本低）
+3. **弃选默认 B**：典型路径是"先用 B 出低成本快照看底子，值得讲再补 A"
+4. **选完模式后逐段确认成片模板**（四段式，见下节）
+5. **先 A 后 B**：建两个任务共享同批视频；B 任务软链 A 的 `narration_segments`（含 line_marks），跳过 low 标注（0 LLM）直接 select-raw。先 B 后 A 同理反向（A 补跑 1 次 high 终稿）
+
+```bash
+# A 模式
+mmm task-create <id> --videos ...            # pipeline_mode 缺省 narrate
+# B 模式
+mmm task-create <id> --videos ... --pipeline-mode raw
+# 先A后B：B 任务复用 A 的 segments（软链，缓存指纹匹配则 0 次 LLM）
+ln -s ../hd-14-fhhj/narration_segments tasks/<b-task-id>/narration_segments
+```
+
+## 成片模板四段式（A/B 共用）
+
+固定顺序：**Cover（封面图·默认2s）→ 片头（外部视频·可选 transform）→ 正片 body → 片尾（图片·默认2s）**。task.json `composition` 列表未声明的段缺省跳过；视频片尾彩蛋（outro_special）已废弃（ADR-0001），原声结尾片段改以 raw_insert 纳入 EDL。
+
+**选完 A/B 后逐段确认**（用户可一次答多项，如"要封面，不要片头，要片尾"）：
+
+| 段 | 内容 | 询问要点 |
+|---|---|---|
+| Cover | intro-maker 产出的 1920×1080 JPG | 要不要封面？给路径 |
+| 片头 | 外部提供视频（intro_common/intro_special） | 用哪个片头？可选 transform 缩放/位移 |
+| body | 解说正片（A）/ raw_insert 拼接（B） | 恒有，不询问 |
+| 片尾 | 静态图片（与 Cover 同构） | 要不要片尾？给图片路径 |
+
+据答写入 task.json `composition`（`cover`/`intro_special`/`outro` 类型；B 模式典型为 Cover + raw_insert 拼接 + 片尾，无片头）。
+
 ## 闸口协议（铁律）
 
-1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`。dry 模式须提示"这是 LOW LLM 出的验证小样稿，精做终稿需 `--profile prod` 重跑"
-2. `mmm run select` 完成后**必须停下**，通知用户审 `storyboard.html`，用户可能已手改 `edl.json`
+> **B 模式（pipeline_mode=raw）仅闸口2**：narrate/tts-plan/tts 全跳过（无解说终稿、无配音）。`select --mode raw` 完成后停在闸口2 审 storyboard.html，确认后直接 render。B 模式 EDL 全 raw_insert（纯原声），render 自动跳过 TTS 闸口。
+
+1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`。dry 模式须提示"这是 LOW LLM 出的验证小样稿，精做终稿需 `--profile prod` 重跑"。**B 模式任务自动跳过此闸口**（quality 标注由 select-raw 兜底）
+2. `mmm run select` 完成后**必须停下**，通知用户审 `storyboard.html`，用户可能已手改 `edl.json`。B 模式分镜板展示每条高光段的时间/说话人/原文/quality 徽章+reason/首帧预览，支持调边界、删除、板上插入高光段
 3. `mmm run tts-plan` 完成后**必须停下**，通知用户审 `tasks/{task_id}/tts_plan.html`
 4. 闸口3 必须逐句核对术语发音、停顿、语气、情绪；TTS 计划按句号/问号/感叹号/分号拆成句级标注，一个 EDL 解说片段会拆成多行；LLM 只能标注表演意图，**不得修改解说稿文本**
 5. 闸口3 报告必须给用户看**中文名词**：`gasps` 显示为「倒吸气」，`sighs` 显示为「叹气」；英文协议值只保留在内部 JSON 和供应商请求里
@@ -101,14 +140,14 @@ faster-whisper，不按量计费，但需模型权重与转录耗时，故不隐
 |------|------|
 | `mmm db-init` | 初始化台账（迁移后第一步） |
 | `mmm add <video_id> --series <系列> [--version] [--chapter]` | 登记素材 + 台词预检 |
-| `mmm task-create <task_id> --videos a,b,c [--series] [--bgm-dir <目录>] [--intro-dir <目录>]` | 建任务（顺序即 seq），生成 task.json。`--bgm-dir`/`--intro-dir` 扫版本目录生成 BGM 歌单与片头清单（见「BGM/片头物料化」） |
+| `mmm task-create <task_id> --videos a,b,c [--series] [--bgm-dir <目录>] [--intro-dir <目录>] [--pipeline-mode narrate\|raw]` | 建任务（顺序即 seq），生成 task.json。`--bgm-dir`/`--intro-dir` 扫版本目录生成 BGM 歌单与片头清单（见「BGM/片头物料化」）。`--pipeline-mode raw`（B 模式）subtitle_mode 缺省 none、写入 raw_select 配置块 |
 | `mmm run shots <video_id>` | 阶段1：镜头切分 + 黑白屏检测（仅需 source.mp4，可提前于任务创建） |
 | `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐。`--task` 模式复用各视频已落盘的 `asr.json`，转录过的不重跑 |
 | `mmm locate-keep <task_id> --quote "<台词>" [--video <video_id>]` | 阶段2后：把用户台词（允许不完全准确）模糊定位到源视频本地秒，输出/写入 `keep_requirements`；未 ASR 提示先跑 `align` |
 | `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5）；仅需 source.mp4 + shots 产物，可提前于任务创建 |
 | `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
 | `mmm run narrate <task_id> [--profile dry\|prod]` | 阶段5：解说稿生成 → 闸口1。`--profile dry`（默认）HIGH 融合环节用 LOW LLM 省钱出小样；`prod` 用 HIGH LLM 精做终稿 |
-| `mmm run select <video_id> --task <task_id>` | 阶段6：选片 + footage_usage 排除 + 分镜板 → 闸口2（任务模式必须带 `--task`，否则按单视频 workspace 解析） |
+| `mmm run select <video_id> --task <task_id> [--mode narrate\|raw]` | 阶段6：选片 + 分镜板 → 闸口2（任务模式必须带 `--task`）。`--mode raw`（或 task.json pipeline_mode=raw）走 B 模式：quality+画面双维度选片，全 raw_insert EDL；无 segments 时自动跑 narrate-low-only 兜底（0 次 HIGH） |
 | `mmm run tts-plan --task <task_id> [--profile dry\|prod]` | 阶段6.5：按句拆分，LLM 逐句生成发音/停顿/语气/情绪标注 → 闸口3 |
 | `mmm tts-approve --task <task_id> --plan-sha256 <sha256>` | 记录用户对 TTS 表演计划的显式确认 |
 | `mmm run tts --task <task_id>` | 阶段6.6：完整合成一次，按词级时间轴切回句级 WAV，再合并回 EDL 片段 |

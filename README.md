@@ -1,17 +1,22 @@
 # mini-movie-maker (mmm)
 
-**长视频浓缩工作流**：把几小时长的剧情/记录类视频（带准确台词文稿）+ 解说配音，自动浓缩成十几分钟的解说短视频。
+**长视频浓缩工作流**：把几小时长的剧情/记录类视频（带准确台词文稿）+ 解说配音，自动浓缩成十几分钟的短视频。支持两种模式：
 
-输入：`台词文案 (script.jsonl)` + `源视频 (source.mp4)` → 输出：`解说短视频 (MP4)` 或 `剪映草稿`。
+- **A 模式（解说短视频）**：LLM 解说稿 + TTS 配音，逐句配画面
+- **B 模式（原声高光直拼）**：无解说无配音，LOW LLM 标注台词 quality 后按高光直拼（全 raw_insert 原声原画，0 次 HIGH LLM 调用，成本低）
+
+输入：`台词文案 (script.jsonl)` + `源视频 (source.mp4)` → 输出：`解说短视频 (MP4)` 或 `原声高光直拼 (MP4)` 或 `剪映草稿`。
 
 ---
 
 ## 核心能力
 
-- **七段主链路**：素材预处理 → 解说稿 → 选片 EDL → TTS 表演计划 → 语音合成 → MP4/剪映导出
+- **双模式管线**：A 模式（TTS 解说短视频）+ B 模式（原声高光直拼），阶段1-4 预处理共享，同批视频可先 B 看底子再补 A
+- **七段主链路**：素材预处理 → 解说稿 → 选片 EDL → TTS 表演计划 → 语音合成 → MP4/剪映导出（B 模式只走 预处理 → 选片 → 导出）
 - **统一 TTS 适配层**：dry 固定 Edge TTS；prod 默认 MiniMax，可按 profile 替换供应商
-- **人工闸口**：解说稿审阅（闸口1）→ 分镜板审阅（闸口2）→ TTS 计划与费用确认（闸口3）
+- **人工闸口**：解说稿审阅（闸口1）→ 分镜板审阅（闸口2）→ TTS 计划与费用确认（闸口3）；B 模式只过闸口2
 - **保留区间**：自然语言指定原始素材哪些位置保留原声（raw_insert），后续内容自动后移
+- **成片模板四段式**：Cover（封面图）→ 片头（外部视频）→ 正片 → 片尾（图片），A/B 共用，未声明的段缺省跳过
 - **双导出器**：ffmpeg 直出 MP4（无人值守）+ 剪映草稿（人工精修通道）
 - **输出规格可配**：分辨率/FPS 默认 1920×1080 30fps，支持 overlay（满屏字幕）/ letterbox（上下黑边电影画幅）
 - **断点续跑**：各阶段幂等，中途崩溃可续跑，vision 逐镜头落盘
@@ -132,6 +137,45 @@ mmm export-jianying hd-p1              # 剪映草稿（人工精修）
 
 ---
 
+## 快速开始（B 模式：原声高光直拼）
+
+B 模式无解说无配音，LOW LLM 标注台词 quality 后按高光直拼，**0 次 HIGH LLM 调用**。阶段1-4 与 A 模式完全共享（同批视频可先用 B 出低成本快照看底子）。
+
+```bash
+# 0. 登记素材（与 A 模式相同）
+mmm add gs-16-p1 --series 原神 --version 1.6 --chapter "盛夏海岛大冒险-P1"
+
+# 1. 建任务：--pipeline-mode raw 建为 B 模式任务
+#    （subtitle_mode 缺省 none、自动写入 raw_select 配置块）
+mmm task-create hd-14-raw --videos gs-16-p1 --pipeline-mode raw
+
+# 2. 阶段1-4：预处理（与 A 模式完全相同，产物落 workspace/{video_id}/，A/B 任务天然共享）
+mmm run shots gs-16-p1
+mmm run align --task hd-14-raw
+mmm run vision gs-16-p1
+mmm run index gs-16-p1
+
+# 3. 阶段6：选片（--mode raw）
+#    无 narration_segments 时自动触发 narrate-low-only 兜底（只跑 LOW 标注 quality，0 次 HIGH）
+mmm run select --task hd-14-raw --mode raw
+
+# 4.【闸口2：审阅 tasks/hd-14-raw/storyboard.html】
+#    分镜板展示每条高光段的时间/说话人/原文/quality 徽章/首帧预览，可调边界、删除、插入
+
+# 5. 阶段7：导出（narrate/tts-plan/tts 全跳过，直接渲染）
+mmm run render --task hd-14-raw
+```
+
+**先 A 后 B**：A 任务跑完后想出原声版，建一个 B 任务登记同批视频，软链 A 的 segments 即可跳过 low 标注（缓存指纹匹配则 0 次 LLM）：
+
+```bash
+mmm task-create hd-14-raw --videos gs-16-p1 --pipeline-mode raw
+ln -s ../hd-14-fhhj/narration_segments tasks/hd-14-raw/narration_segments
+mmm run select --task hd-14-raw --mode raw && mmm run render --task hd-14-raw
+```
+
+---
+
 ## 配置说明
 
 ### 系列配置 `config/series/{系列}.yaml`
@@ -156,9 +200,10 @@ mmm export-jianying hd-p1              # 剪映草稿（人工精修）
 ```jsonc
 {
   "task_id": "hd-p1",
+  "pipeline_mode": "narrate",      // narrate（A 模式，缺省）/ raw（B 模式，原声高光直拼）
   "videos": [{"video_id": "gs-16-p1", "seq": 0}],
   "output": {"width": 1920, "height": 1080, "fps": 30},
-  "subtitle_mode": "letterbox",
+  "subtitle_mode": "letterbox",   // B 模式缺省 none（无解说无字幕）
   "keep_requirements": [           // 保留区间（raw_insert 原声段）
     {"video_id": "gs-16-p1", "start": 300.5, "end": 320.0, "note": "战斗原声"}
   ],
@@ -167,13 +212,36 @@ mmm export-jianying hd-p1              # 剪映草稿（人工精修）
 }
 ```
 
+#### `pipeline_mode`（A/B 模式开关）
+
+| 值 | 模式 | 链路 | HIGH LLM | TTS |
+|---|---|---|---|---|
+| `narrate`（缺省） | A 解说短视频 | 预处理 → narrate → select → tts-plan → tts → render | 1 次（终稿） | 完整链路 |
+| `raw` | B 原声高光直拼 | 预处理 → select --mode raw → render | 0 次 | 全跳过 |
+
+`raw` 时 `subtitle_mode` 缺省 `none`、自动写入 `raw_select` 配置块；narrate/tts-plan/tts 阶段命令在 B 模式任务上自动跳过，render 跳过 TTS 闸口。
+
+#### `raw_select`（B 模式选片配置，仅 `pipeline_mode=raw` 时生效）
+
+```jsonc
+"raw_select": {
+  "quality_levels": ["great"],     // 参与直拼的 quality 级别（great=默认；可加 good）
+  "buffer_sec": 0.0,               // 每段前后留白秒数
+  "min_shot_class": "B",           // 画面维度一票否决：该台词所在 shot 的 class 优于阈值才入选（E→A 越靠前越优）
+  "prefer_ui_types": ["dialogue"], // 偏好的 UI 类型（dialogue 优先）
+  "auto_low_extract": true         // 无 segments 时自动跑 narrate-low-only 兜底
+}
+```
+
+quality 为纯叙事维度（great/good/skip，由 LOW LLM 在 `line_marks` 标注）；画面/UI 维度在 selector 层组合（`min_shot_class` 一票否决 + `prefer_ui_types` 偏好）。整块可省略，省略时用上述缺省值。
+
 ### 保留区间
 
 原始素材指定位置**保留原声原画**（raw_insert）：区间内不排解说，后续内容整体后移。用自然语言经 Skill 配置，或直接编辑 task.json `keep_requirements`。
 
 ### 输出规格
 
-所有源素材等比缩放适配目标分辨率。`letterbox` 模式上下 crop 出 2.35:1 电影画幅 + 黑边（左右无黑边，字幕落黑边，右下角 UID 被底部裁剪消除），**默认不做缩放**（除非显式指定 transform）。
+所有源素材等比缩放适配目标分辨率。`letterbox` 模式上下 crop 出 2.35:1 电影画幅 + 黑边（左右无黑边，字幕落黑边，右下角 UID 被底部裁剪消除），**默认不做缩放**（除非显式指定 transform）。B 模式 `subtitle_mode` 缺省 `none`，无字幕轨。
 
 ---
 
@@ -252,4 +320,5 @@ A: 不会。每次渲染输出带时间戳 `{title}_YYYYMMDD_HHMMSS.mp4`，历�
   - 过场升级垫 v1.0.5：同文档末尾章节（is_cutscene 参与分级，长过场≥6s 至少 C 级，解决高价值过场被空镜压过）
 - TTS 适配层与供应商闸口 v1.0.6：`docs/2026/0828-v1.0.6-TTS适配层与供应商闸口方案.md`
 - 全项目流程图：`docs/2026/0828-全项目流程图.md`
+- B 模式原声高光直拼 v1.1.0：`docs/2026/0905-B模式原声高光直拼方案.md`（评审定稿已实现；§11 决策纪要）
 - 进度：`PROGRESS.md`
