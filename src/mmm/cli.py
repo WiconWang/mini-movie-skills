@@ -144,8 +144,8 @@ def task_create(
     task_id: str,
     videos: str = typer.Option(..., "--videos", help="逗号分隔的 video_id，顺序即剧情顺序"),
     series: str = typer.Option("", "--series", "-s", help="系列（缺省取首个视频的系列）"),
-    bgm_dir: str = typer.Option("", "--bgm-dir", help="版本 BGM 目录（如 assets/bgm/V1.6版本），扫码生成歌单"),
-    intro_dir: str = typer.Option("", "--intro-dir", help="版本片头目录（如 assets/intros/V1.6版本），取排序首个视频"),
+    bgm_dir: str = typer.Option("", "--bgm-dir", help="版本 BGM 目录（相对数据根，如 genshin/musics/1.6），扫码生成歌单"),
+    intro_dir: str = typer.Option("", "--intro-dir", help="版本片头目录（相对数据根，如 genshin/video-intros），取排序首个视频"),
     pipeline_mode: str = typer.Option("narrate", "--pipeline-mode", help="narrate（A 模式解说）/ raw（B 模式原声高光直拼）"),
 ) -> None:
     """建任务：引用视频 + 生成 task.json（类型适配层配置继承系列默认）。

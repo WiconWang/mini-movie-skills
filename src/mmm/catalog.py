@@ -14,7 +14,7 @@ import yaml
 from .db import init_db
 from .paths import CODE_ROOT, DATA_ROOT
 
-# 版本物料扫码：BGM / 片头按版本目录组织（assets/bgm/V{版本}版本/ 等），
+# 版本物料扫码：BGM / 片头按版本目录组织（数据根下如 genshin/musics/{版本}/ 等），
 # task-create 时扫描目录生成文件清单写入 task.json，下游 stage 直接消费清单。
 _AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"}
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
