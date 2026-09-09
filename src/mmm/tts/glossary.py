@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from ..db import PROJECT_ROOT
+from ..paths import CODE_ROOT
 from .types import PronunciationRule
 
 PINYIN_RE = re.compile(
@@ -22,7 +22,7 @@ def load_series_pronunciations(series: str, version: str = "") -> list[Pronuncia
     """按系列和版本加载兜底发音；version 条目覆盖同词 common 条目。"""
     if not series:
         return []
-    path = PROJECT_ROOT / "config" / "tts" / f"{series}.yaml"
+    path = CODE_ROOT / "config" / "tts" / f"{series}.yaml"
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

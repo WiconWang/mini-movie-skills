@@ -242,7 +242,7 @@ class SelectRawTests(unittest.TestCase):
 
     def _run(self, out_dir, **kwargs):
         with mock.patch("mmm.stage_select_raw.reviewer.build_storyboard"), \
-             mock.patch("mmm.db.PROJECT_ROOT", out_dir):
+             mock.patch("mmm.paths.DATA_ROOT", out_dir):
             return stage_select_raw.run(out_dir, "t1", **kwargs)
 
     def test_full_raw_insert_edl(self):
@@ -354,7 +354,7 @@ class SelectRawTests(unittest.TestCase):
                 json.dumps(timeline, ensure_ascii=False), encoding="utf-8")
             with mock.patch("mmm.stage_narrate_low.run_low_only",
                             side_effect=fake_low_only), \
-                 mock.patch("mmm.db.PROJECT_ROOT", out_dir), \
+                 mock.patch("mmm.paths.DATA_ROOT", out_dir), \
                  mock.patch("mmm.stage_select_raw.reviewer.build_storyboard"):
                 stage_select_raw.run(out_dir, "t1")
             self.assertEqual(calls["n"], 1)
@@ -375,8 +375,7 @@ class ComposeFourSegmentTests(unittest.TestCase):
                 {"type": "outro_special", "src": "/nonexist.mp4", "start": 0, "end": 1}]}
             (task_dir / "task.json").write_text(
                 json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
-            with mock.patch("mmm.stage_compose.PROJECT_ROOT" if False else "mmm.db.PROJECT_ROOT",
-                            Path(tmp)):
+            with mock.patch("mmm.paths.DATA_ROOT", Path(tmp)):
                 # outro_special 被忽略 → 无 cover/intro/outro → 直接返回 body
                 result = stage_compose.from_task("t1", body)
         self.assertEqual(result, body)
@@ -409,7 +408,7 @@ class ComposeFourSegmentTests(unittest.TestCase):
                 captured["outro"] = outro
                 return out
 
-            with mock.patch("mmm.db.PROJECT_ROOT", Path(tmp)), \
+            with mock.patch("mmm.paths.DATA_ROOT", Path(tmp)), \
                  mock.patch.object(stage_compose, "compose", side_effect=fake_compose):
                 stage_compose.from_task("t1", body)
         self.assertEqual(captured["cover"], cover)
@@ -451,7 +450,7 @@ class RenderSkipTtsTests(unittest.TestCase):
                  mock.patch("mmm.stage_render.probe_duration", return_value=1.0), \
                  mock.patch("mmm.tts.runtime.prepare_render_artifacts",
                             side_effect=fake_prepare), \
-                 mock.patch("mmm.db.PROJECT_ROOT", Path(tmp)):
+                 mock.patch("mmm.paths.DATA_ROOT", Path(tmp)):
                 from mmm import stage_render
 
                 stage_render.run(work_dir, {"v1": video},

@@ -5,9 +5,10 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from .paths import CODE_ROOT
+
 # 带 libass 的 static build（temp/ffmpeg-static，gitignore）；存在则优先，否则回退 PATH
-_FFMPEG_STATIC_DIR = PROJECT_ROOT / "temp" / "ffmpeg-static"
+_FFMPEG_STATIC_DIR = CODE_ROOT / "temp" / "ffmpeg-static"
 
 
 def ffmpeg_bin() -> str:

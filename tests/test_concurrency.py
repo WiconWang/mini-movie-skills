@@ -50,7 +50,7 @@ class TaskScopedArtifactTests(unittest.TestCase):
             words = [{"text": "第一句", "start": 0.0, "end": 1.0}]
 
             with mock.patch("mmm.catalog.task_videos", return_value=videos), \
-                    mock.patch("mmm.db.PROJECT_ROOT", root), \
+                    mock.patch("mmm.paths.DATA_ROOT", root), \
                     mock.patch.object(stage_asr, "ensure_asr", return_value=words), \
                     mock.patch.object(stage_asr, "_video_duration", return_value=10.0):
                 report = stage_asr.align_task("task-a")
@@ -80,7 +80,7 @@ class TaskScopedArtifactTests(unittest.TestCase):
             videos = [{"video_id": "v1"}]
 
             with mock.patch("mmm.catalog.task_videos", return_value=videos), \
-                    mock.patch("mmm.db.PROJECT_ROOT", root):
+                    mock.patch("mmm.paths.DATA_ROOT", root):
                 stats = stage_index.build_global("task-a")
 
             self.assertEqual(stats["shots"], 1)

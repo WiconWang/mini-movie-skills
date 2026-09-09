@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import models
-from .db import PROJECT_ROOT
+from .paths import CODE_ROOT
 from .models import ModelProfile
 
 ENV_PREFIXES = {
@@ -33,15 +33,15 @@ ENV_PREFIXES = {
 # 缺失时返回 400 MissingSessionID。同进程共享一个 session id（任意 UUID 即可）。
 _OPENCODE_SESSION_ID = f"mmm-{uuid.uuid4().hex[:12]}"
 
-LOG_PATH = PROJECT_ROOT / "logs" / "llm_calls.jsonl"
+LOG_PATH = CODE_ROOT / "logs" / "llm_calls.jsonl"
 _LOG_LOCK = threading.Lock()
 _RATE_LOCK = threading.Lock()
 _RATE_LAST: dict[tuple[str, str], float] = {}
 
 
 def _load_env_file() -> dict[str, str]:
-    """读取 .env，不覆盖 shell 已提供的环境变量。"""
-    env = PROJECT_ROOT / ".env"
+    """读取 .env（复用 paths 解析），不覆盖 shell 已提供的环境变量。"""
+    env = CODE_ROOT / ".env"
     values: dict[str, str] = {}
     if not env.exists():
         return values

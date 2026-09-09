@@ -50,9 +50,9 @@ def _fontconfig_env(font_dir: Path | None = None) -> dict[str, str]:
     本机缓存未索引 assets/fonts 时会静默回退到系统黑体。这里注入一个临时
     fontconfig，把字体目录加进配置并继承系统默认，从而真正命中，而不注册系统字体。
     """
-    from .media import PROJECT_ROOT
+    from .paths import CODE_ROOT
 
-    font_dir = font_dir or PROJECT_ROOT / "assets" / "fonts"
+    font_dir = font_dir or CODE_ROOT / "assets" / "fonts"
     fc_root = Path(tempfile.mkdtemp(prefix="mmm-fonts-"))
     cache_dir = fc_root / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -412,9 +412,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     tts_cfg: dict = {}
     out_w, out_h, out_fps = DEFAULT_OUT_W, DEFAULT_OUT_H, DEFAULT_OUT_FPS
     if task_id:
-        from .db import PROJECT_ROOT
+        from .paths import DATA_ROOT
 
-        cfg_path = PROJECT_ROOT / "tasks" / task_id / "task.json"
+        cfg_path = DATA_ROOT / "tasks" / task_id / "task.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
             subtitle_cfg = cfg.get("subtitle") or subtitle_cfg

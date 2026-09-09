@@ -8,9 +8,9 @@ from urllib.parse import urlparse
 
 import yaml
 
-from .db import PROJECT_ROOT
+from .paths import CODE_ROOT
 
-MODELS_YAML = PROJECT_ROOT / "config" / "models.yaml"
+MODELS_YAML = CODE_ROOT / "config" / "models.yaml"
 ROUTES = ("narrate_low", "narrate_high", "vision", "tts_plan")
 PROTOCOLS = {"openai_chat_completions"}
 MAX_TOKENS_FIELDS = {"max_tokens", "max_completion_tokens"}

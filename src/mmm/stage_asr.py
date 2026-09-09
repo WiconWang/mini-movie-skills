@@ -120,14 +120,14 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
     避免多个任务引用同一源视频时互相覆盖。
     """
     from .catalog import task_videos
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
     from .stage_align import AsrWord, align
 
     videos = task_videos(task_id)
     if not videos:
         raise KeyError(f"任务无关联素材: {task_id}")
 
-    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_dir = DATA_ROOT / "tasks" / task_id
     task_workspace = task_dir / "workspace"
     task_cfg = {}
     cfg_path = task_dir / "task.json"
@@ -136,7 +136,7 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
     script_rel = task_cfg.get("script_path") or videos[0].get("script_path")
     if not script_rel:
         raise KeyError(f"任务 {task_id} 无台词来源（task.json script_path 或素材 script_path）")
-    script_path = PROJECT_ROOT / script_rel
+    script_path = DATA_ROOT / script_rel
 
     # 1. 逐视频 ASR + 拼接全局词流
     offsets: list[tuple[str, float, float]] = []   # (video_id, offset, duration)
@@ -144,8 +144,8 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
     offset = 0.0
     for v in videos:
         vid = v["video_id"]
-        video = PROJECT_ROOT / v["source_path"] / "source.mp4"
-        work = PROJECT_ROOT / "workspace" / vid
+        video = DATA_ROOT / v["source_path"] / "source.mp4"
+        work = DATA_ROOT / "workspace" / vid
         words = ensure_asr(video, work, model_size)
         for w in words:
             global_words.append(AsrWord(text=w["text"],

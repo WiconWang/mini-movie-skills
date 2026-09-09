@@ -9,15 +9,26 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = PROJECT_ROOT / "pipeline.sqlite"
-SCHEMA_PATH = PROJECT_ROOT / "db" / "schema.sql"
+from .paths import CODE_ROOT, DATA_ROOT, PROJECT_ROOT  # noqa: F401 (PROJECT_ROOT 过渡别名)
+
+SCHEMA_PATH = CODE_ROOT / "db" / "schema.sql"
+
+
+def default_db_path() -> Path:
+    """台账路径：数据根下 pipeline.sqlite。运行时解析，不冻结于 import 时。"""
+    return DATA_ROOT / "pipeline.sqlite"
+
+
+# 兼容旧引用（cli.py 展示路径用）；运行时取值，与 default_db_path() 一致。
+DB_PATH = default_db_path()
 
 _INITIALIZED: set[Path] = set()
 
 
-def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
+def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     """按 schema.sql 建库（幂等），返回启用 WAL 并发设置的连接。"""
+    db_path = db_path or default_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=30)
     # 每个连接都要设置；WAL 只在首次初始化时切换，减少并发写锁竞争。
     conn.execute("PRAGMA busy_timeout=30000")

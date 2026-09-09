@@ -263,7 +263,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.
     min_shot_class 一票否决：shot class 低于此值的台词剔除（画面底线优先，
     quality 再高也不救画面不达标的台词）。class 排序 E>D>C>B>A（越小越好）。
     """
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
 
     quality_levels = quality_levels or ["great"]
     prefer_ui_types = prefer_ui_types or ["dialogue"]
@@ -312,7 +312,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.
 
     # 5. 构造全 raw_insert EDL
     def ws_of(vid: str) -> Path:
-        return PROJECT_ROOT / "workspace" / vid
+        return DATA_ROOT / "workspace" / vid
 
     edl = build_raw_edl(timeline, picks, video_order, ws_of)
     (work_dir / "edl.json").write_text(
@@ -324,7 +324,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.
         edl, storyboard_path,
         task_id=video_id,
         title=f"{video_id} 原声高光分镜板",
-        frames_base=PROJECT_ROOT,
+        frames_base=DATA_ROOT,
         chars_per_sec=4.5,
         tts_speed=1.0,
         embed_frames=False,

@@ -151,8 +151,8 @@ def _frame_paths(shot_id: int, ws: Path) -> list[str]:
     frames_dir = ws / "frames" / f"shot_{shot_id:03d}"
     if not frames_dir.exists():
         return []
-    from .db import PROJECT_ROOT
-    return [str(f.resolve().relative_to(PROJECT_ROOT))
+    from .paths import DATA_ROOT
+    return [str(f.resolve().relative_to(DATA_ROOT))
             for f in sorted(frames_dir.glob("f_*.jpg"))]
 
 
@@ -169,9 +169,9 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
       生成 raw_insert 片段（原声原画）并入 EDL，区间内不排解说句；
       按源时间顺序与解说片段合流（后续内容整体后移）。
     """
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
 
-    workspace_of = workspace_of or (lambda vid: PROJECT_ROOT / "workspace" / vid)
+    workspace_of = workspace_of or (lambda vid: DATA_ROOT / "workspace" / vid)
 
     def ws_of(vid: str) -> Path:
         return workspace_of(vid)
@@ -322,7 +322,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
     exclude_task：复用排除时豁免本任务（允许重跑选片不被自己的旧登记卡住）。
     """
     from .catalog import used_shots
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
 
     narration_path = work_dir / "narration.json"
     timeline_path = work_dir / timeline_name
@@ -355,7 +355,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
         edl, storyboard_path,
         task_id=video_id,
         title=f"{video_id} 分镜板",
-        frames_base=PROJECT_ROOT,
+        frames_base=DATA_ROOT,
         chars_per_sec=chars_per_sec,
         tts_speed=tts_speed,
         embed_frames=False,

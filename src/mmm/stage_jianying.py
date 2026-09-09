@@ -64,7 +64,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
     import pyJianYingDraft as draft
 
     from . import stage_render, stage_subtitle
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
     from .media import probe_duration
 
     edl = json.loads((work_dir / "edl.json").read_text())
@@ -76,7 +76,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
     tts_cfg: dict = {}
     out_w, out_h, out_fps = 1920, 1080, 30
     if task_id:
-        cfg_path = PROJECT_ROOT / "tasks" / task_id / "task.json"
+        cfg_path = DATA_ROOT / "tasks" / task_id / "task.json"
         if cfg_path.exists():
             cfg = json.loads(cfg_path.read_text())
             overlay_transform = (cfg.get("subtitle") or {}).get("overlay_transform") or overlay_transform
@@ -164,7 +164,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
         while tb < t:
             p = Path(bgm_playlist[idx % len(bgm_playlist)])
             if not p.is_absolute():
-                p = PROJECT_ROOT / p
+                p = DATA_ROOT / p
             mat = draft.AudioMaterial(str(p.resolve()))
             use_us = min(mat.duration, round((t - tb) * 1e6))   # 素材时长以剪映探测为准
             if use_us <= 0:
@@ -183,7 +183,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
         from .catalog import register_usage
 
         registered = register_usage(task_id, clips)
-        out_dir = PROJECT_ROOT / "output" / task_id
+        out_dir = DATA_ROOT / "output" / task_id
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "edl.final.json").write_text(
             json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")

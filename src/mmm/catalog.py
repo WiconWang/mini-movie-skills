@@ -11,7 +11,8 @@ from pathlib import Path
 
 import yaml
 
-from .db import PROJECT_ROOT, init_db
+from .db import init_db
+from .paths import CODE_ROOT, DATA_ROOT
 
 # 版本物料扫码：BGM / 片头按版本目录组织（assets/bgm/V{版本}版本/ 等），
 # task-create 时扫描目录生成文件清单写入 task.json，下游 stage 直接消费清单。
@@ -20,17 +21,17 @@ _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 
 
 def _resolve_dir(dir_path: str) -> Path:
-    """版本目录路径解析：相对项目根 / 绝对路径。不存在则报错（不静默回退）。"""
-    p = Path(dir_path) if Path(dir_path).is_absolute() else PROJECT_ROOT / dir_path
+    """版本目录路径解析：相对数据根 / 绝对路径。不存在则报错（不静默回退）。"""
+    p = Path(dir_path) if Path(dir_path).is_absolute() else DATA_ROOT / dir_path
     if not p.is_dir():
         raise FileNotFoundError(f"版本目录不存在: {p}")
     return p
 
 
 def _relpath(p: Path) -> str:
-    """转相对项目根路径；不在项目根下则返回绝对路径。"""
+    """转相对数据根路径；不在数据根下则返回绝对路径。"""
     try:
-        return str(p.resolve().relative_to(PROJECT_ROOT.resolve()))
+        return str(p.resolve().relative_to(DATA_ROOT.resolve()))
     except ValueError:
         return str(p.resolve())
 
@@ -60,13 +61,13 @@ def scan_intros(intro_dir: str) -> list[dict]:
     return [{"type": "intro_special", "src": _relpath(files[0])}]
 
 
-CATALOG_YAML = PROJECT_ROOT / "catalog.yaml"
-CATALOG_EXAMPLE = PROJECT_ROOT / "catalog.example.yaml"
+CATALOG_YAML = CODE_ROOT / "catalog.yaml"
+CATALOG_EXAMPLE = CODE_ROOT / "catalog.example.yaml"
 
 
 def add_video(video_id: str, series: str, version: str = "", chapter: str = "") -> dict:
     """登记单个素材：校验物料 + 台词预检 + upsert catalog（物料规范 §6）。"""
-    base = PROJECT_ROOT / "materials" / video_id
+    base = DATA_ROOT / "materials" / video_id
     src, script = base / "source.mp4", base / "script.jsonl"
     if not src.exists():
         raise FileNotFoundError(f"缺少视频: {src}")
@@ -132,7 +133,7 @@ def create_task(task_id: str, video_ids: list[str], series: str = "",
     conn.commit()
 
     cfg = {}
-    series_cfg = PROJECT_ROOT / "config" / "series" / f"{series}.yaml"
+    series_cfg = CODE_ROOT / "config" / "series" / f"{series}.yaml"
     if series_cfg.exists():
         cfg = yaml.safe_load(series_cfg.read_text(encoding="utf-8")) or {}
 
@@ -166,7 +167,7 @@ def create_task(task_id: str, video_ids: list[str], series: str = "",
             "prefer_ui_types": ["dialogue"],
             "auto_low_extract": True,
         }
-    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_dir = DATA_ROOT / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "task.json").write_text(
         json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")

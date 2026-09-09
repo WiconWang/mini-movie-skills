@@ -157,9 +157,9 @@ def from_task(task_id: str, body_path: Path) -> Path:
     composition 未声明的段缺省跳过；outro_special 类型不复存在（ADR-0001）。
     无外段时正片即最终成片，直接返回避免大文件复制副本。
     """
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
 
-    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_dir = DATA_ROOT / "tasks" / task_id
     cfg = json.loads((task_dir / "task.json").read_text())
     composition = cfg.get("composition", [])
 
@@ -170,17 +170,17 @@ def from_task(task_id: str, body_path: Path) -> Path:
         t = item.get("type")
         src = item.get("src")
         if t == "cover" and src:
-            p = Path(src) if Path(src).is_absolute() else PROJECT_ROOT / src
+            p = Path(src) if Path(src).is_absolute() else DATA_ROOT / src
             if not p.exists():
                 raise FileNotFoundError(f"Cover 图片不存在: {p}")
             cover = p
         elif t in ("intro_common", "intro_special") and src:
-            p = Path(src) if Path(src).is_absolute() else PROJECT_ROOT / src
+            p = Path(src) if Path(src).is_absolute() else DATA_ROOT / src
             if not p.exists():
                 raise FileNotFoundError(f"片头素材不存在: {p}")
             intro_files.append(p)
         elif t == "outro" and src:
-            p = Path(src) if Path(src).is_absolute() else PROJECT_ROOT / src
+            p = Path(src) if Path(src).is_absolute() else DATA_ROOT / src
             if not p.exists():
                 raise FileNotFoundError(f"片尾图片不存在: {p}")
             outro = p
@@ -188,7 +188,7 @@ def from_task(task_id: str, body_path: Path) -> Path:
     if cover is None and not intro_files and outro is None:
         return body_path
 
-    out_dir = PROJECT_ROOT / "output" / task_id
+    out_dir = DATA_ROOT / "output" / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
     # final 名继承正片 stem（含时间戳），避免历史版本互相覆盖
     out_path = out_dir / f"{body_path.stem}_final{body_path.suffix}"

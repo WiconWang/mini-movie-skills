@@ -14,9 +14,9 @@ import mimetypes
 import os
 from pathlib import Path
 
-from .db import PROJECT_ROOT
+from .paths import CODE_ROOT, DATA_ROOT
 
-TEMPLATE = (PROJECT_ROOT / "skills/mini-movie-maker/tools/reviewer/storyboard_template.html")
+TEMPLATE = (CODE_ROOT / "skills/mini-movie-maker/tools/reviewer/storyboard_template.html")
 
 
 def _img_data_uri(path: Path, max_bytes: int = 400_000) -> str:
@@ -65,7 +65,7 @@ def build_storyboard(edl: dict, out_path: Path, *, task_id: str, title: str = ""
     frames_base：帧图路径的基准目录；chars_per_sec/tts_speed 用于估算解说片段时长。
     embed_frames=False 时帧图用相对路径引用，HTML 保持轻量。
     """
-    base = frames_base or PROJECT_ROOT
+    base = frames_base or DATA_ROOT
     edl = dict(edl)
     out_dir = out_path.parent
     edl["clips"] = [_resolve_frames(c, base, out_dir, embed_frames) for c in edl["clips"]]

@@ -126,7 +126,7 @@ def build_global(task_id: str) -> dict:
     start/end 为任务全局时间（设计文档 §4 阶段4 多视频合流）。
     """
     from .catalog import task_videos
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
 
     videos = task_videos(task_id)
     if not videos:
@@ -137,10 +137,10 @@ def build_global(task_id: str) -> dict:
     m_fades: list[dict] = []
     videos_meta = []
     offset = 0.0
-    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_dir = DATA_ROOT / "tasks" / task_id
     for v in videos:
         vid = v["video_id"]
-        shared_work = PROJECT_ROOT / "workspace" / vid
+        shared_work = DATA_ROOT / "workspace" / vid
         task_work = task_dir / "workspace" / vid
         task_lines = task_work / "lines.json"
         tl_path = task_work / "timeline.json"
@@ -175,7 +175,7 @@ def build_global(task_id: str) -> dict:
            "shots": m_shots, "lines": m_lines, "fades": m_fades,
            "stats": {"shots": len(m_shots), "by_class": counts,
                      "duration": round(offset, 1)}}
-    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_dir = DATA_ROOT / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "global_timeline.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")

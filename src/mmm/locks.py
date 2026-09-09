@@ -9,7 +9,7 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from .db import PROJECT_ROOT
+from .paths import CODE_ROOT
 
 
 class LockBusy(RuntimeError):
@@ -18,7 +18,7 @@ class LockBusy(RuntimeError):
 
 def _lock_path(key: str) -> Path:
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
-    return PROJECT_ROOT / ".locks" / f"{digest}.lock"
+    return CODE_ROOT / ".locks" / f"{digest}.lock"
 
 
 def _holder_pid(path: Path) -> int | None:

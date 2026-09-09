@@ -11,7 +11,7 @@ import json
 import unicodedata
 from pathlib import Path
 
-from .db import PROJECT_ROOT
+from .paths import DATA_ROOT
 
 DEFAULT_THRESHOLD = 0.6
 DEFAULT_PAD = 0.5
@@ -45,11 +45,11 @@ def _levenshtein(a: str, b: str) -> int:
 
 def asr_path(video_id: str, task_id: str = "") -> Path | None:
     """返回可用的 asr.json；共享 workspace 优先，任务级兜底。"""
-    shared = PROJECT_ROOT / "workspace" / video_id / "asr.json"
+    shared = DATA_ROOT / "workspace" / video_id / "asr.json"
     if shared.exists():
         return shared
     if task_id:
-        task = PROJECT_ROOT / "tasks" / task_id / "workspace" / video_id / "asr.json"
+        task = DATA_ROOT / "tasks" / task_id / "workspace" / video_id / "asr.json"
         if task.exists():
             return task
     return None

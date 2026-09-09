@@ -189,10 +189,10 @@ def run_shots(
 
     if path:
         video = Path(path)
-        out_dir = db.PROJECT_ROOT / "workspace" / "_smoke" / video.stem
+        out_dir = db.DATA_ROOT / "workspace" / "_smoke" / video.stem
     else:
-        video = db.PROJECT_ROOT / "materials" / video_id / "source.mp4"
-        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        video = db.DATA_ROOT / "materials" / video_id / "source.mp4"
+        out_dir = db.DATA_ROOT / "workspace" / video_id
         if _skip_if_done(video_id, "shots", out_dir / "shots.json", force=force):
             return
     if not video.exists():
@@ -224,7 +224,7 @@ def run_align(
     if task:
         from . import catalog
 
-        task_dir = db.PROJECT_ROOT / "tasks" / task
+        task_dir = db.DATA_ROOT / "tasks" / task
         anchors = [task_dir / "align_global.json"] + [
             task_dir / "workspace" / v["video_id"] / "lines.json"
             for v in catalog.task_videos(task)]
@@ -245,11 +245,11 @@ def run_align(
 
     if path and script:
         video, script_p = Path(path), Path(script)
-        out_dir = db.PROJECT_ROOT / "workspace" / "_smoke" / video.stem
+        out_dir = db.DATA_ROOT / "workspace" / "_smoke" / video.stem
     else:
-        base = db.PROJECT_ROOT / "materials" / video_id
+        base = db.DATA_ROOT / "materials" / video_id
         video, script_p = base / "source.mp4", base / "script.jsonl"
-        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        out_dir = db.DATA_ROOT / "workspace" / video_id
         if _skip_if_done(video_id, "align", out_dir / "lines.json", force=force):
             return
     for p in (video, script_p):
@@ -281,10 +281,10 @@ def run_vision(
 
     if path:
         video = Path(path)
-        out_dir = db.PROJECT_ROOT / "workspace" / "_smoke" / video.stem
+        out_dir = db.DATA_ROOT / "workspace" / "_smoke" / video.stem
     else:
-        video = db.PROJECT_ROOT / "materials" / video_id / "source.mp4"
-        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        video = db.DATA_ROOT / "materials" / video_id / "source.mp4"
+        out_dir = db.DATA_ROOT / "workspace" / video_id
         if _skip_if_done(video_id, "vision", out_dir / "shots_meta.json", force=force):
             return
     if not video.exists():
@@ -320,8 +320,8 @@ def run_index(
         if video_id not in videos:
             typer.echo(f"✗ 任务 {task} 未关联视频: {video_id}", err=True)
             raise typer.Exit(1)
-        shared_work = db.PROJECT_ROOT / "workspace" / video_id
-        out_dir = db.PROJECT_ROOT / "tasks" / task / "workspace" / video_id
+        shared_work = db.DATA_ROOT / "workspace" / video_id
+        out_dir = db.DATA_ROOT / "tasks" / task / "workspace" / video_id
         lines_path = out_dir / "lines.json"
         if not lines_path.exists():
             typer.echo(f"✗ 缺少任务级对齐结果: {lines_path}（先跑 mmm run align --task {task}）", err=True)
@@ -348,7 +348,7 @@ def run_index(
     if path:
         out_dir = Path(path)
     else:
-        out_dir = db.PROJECT_ROOT / "workspace" / video_id
+        out_dir = db.DATA_ROOT / "workspace" / video_id
         if _skip_if_done(video_id, "index", out_dir / "timeline.json", force=force):
             return
     if not (out_dir / "shots.json").exists():
@@ -395,7 +395,7 @@ def run_narrate(
         timeline_path = Path(timeline)
         out_dir = timeline_path.parent
     elif task_id:
-        out_dir = db.PROJECT_ROOT / "tasks" / task_id
+        out_dir = db.DATA_ROOT / "tasks" / task_id
         # B 模式任务跳过 narrate（high 终稿）——quality 标注由 select-raw 兜底
         cfg = json.loads((out_dir / "task.json").read_text(encoding="utf-8")) \
             if (out_dir / "task.json").exists() else {}
@@ -467,7 +467,7 @@ def run_select(
     """
     select_mode = mode
     if task:
-        out_dir = db.PROJECT_ROOT / "tasks" / task
+        out_dir = db.DATA_ROOT / "tasks" / task
         if _skip_if_done(task, "select", out_dir / "edl.json",
                          out_dir / "storyboard.html", force=force):
             return
@@ -517,7 +517,7 @@ def run_select(
         return
 
     # 冒烟路径（无 task）
-    out_dir = Path(path) if path else db.PROJECT_ROOT / "workspace" / video_id
+    out_dir = Path(path) if path else db.DATA_ROOT / "workspace" / video_id
     if not (out_dir / "narration.json").exists():
         typer.echo(f"✗ 缺少 narration.json: {out_dir}", err=True)
         raise typer.Exit(1)
@@ -554,7 +554,7 @@ def run_tts_plan(
         typer.echo("✗ 必须提供 --task", err=True)
         raise typer.Exit(1)
 
-    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    task_dir = db.DATA_ROOT / "tasks" / task_id
     cfg = json.loads((task_dir / "task.json").read_text(encoding="utf-8")) \
         if (task_dir / "task.json").exists() else {}
     if cfg.get("pipeline_mode") == "raw":
@@ -622,7 +622,7 @@ def tts_approve(
         typer.echo("✗ 必须提供 --task", err=True)
         raise typer.Exit(1)
 
-    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    task_dir = db.DATA_ROOT / "tasks" / task_id
     try:
         approval = tts_runtime.approve_plan(task_dir, plan_sha256)
     except (FileNotFoundError, ValueError) as exc:
@@ -654,7 +654,7 @@ def run_tts(
         typer.echo("✗ 必须提供 --task", err=True)
         raise typer.Exit(1)
 
-    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    task_dir = db.DATA_ROOT / "tasks" / task_id
     cfg = json.loads((task_dir / "task.json").read_text(encoding="utf-8")) \
         if (task_dir / "task.json").exists() else {}
     if cfg.get("pipeline_mode") == "raw":
@@ -702,12 +702,12 @@ def run_render(
     from . import catalog, stage_render
 
     if task:
-        task_dir = db.PROJECT_ROOT / "tasks" / task
+        task_dir = db.DATA_ROOT / "tasks" / task
         cfg = json.loads((task_dir / "task.json").read_text())
-        videos = {v["video_id"]: db.PROJECT_ROOT / v["source_path"] / "source.mp4"
+        videos = {v["video_id"]: db.DATA_ROOT / v["source_path"] / "source.mp4"
                   for v in catalog.task_videos(task)}
         out_name = _render_title(cfg)
-        out_dir = db.PROJECT_ROOT / "output" / task
+        out_dir = db.DATA_ROOT / "output" / task
         out_dir.mkdir(parents=True, exist_ok=True)
         # 每次渲染输出带时间戳（历史不覆盖，用户可反悔）；latest 固定名指向最新
         stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -729,8 +729,8 @@ def run_render(
         bgm_list = _parse_bgm_paths(bgm)
         subtitle_mode = subtitle or "overlay"
     elif video_id:
-        work_dir = db.PROJECT_ROOT / "workspace" / video_id
-        videos = {video_id: db.PROJECT_ROOT / "materials" / video_id / "source.mp4"}
+        work_dir = db.DATA_ROOT / "workspace" / video_id
+        videos = {video_id: db.DATA_ROOT / "materials" / video_id / "source.mp4"}
         out_path = None
         bgm_list = _parse_bgm_paths(bgm)
         subtitle_mode = subtitle or "overlay"
@@ -774,7 +774,7 @@ def export_jianying(
     """阶段7 导出器B：生成剪映草稿；只复用已完成 TTS 片段。"""
     from . import catalog, stage_jianying
 
-    task_dir = db.PROJECT_ROOT / "tasks" / task_id
+    task_dir = db.DATA_ROOT / "tasks" / task_id
     if not (task_dir / "edl.json").exists():
         typer.echo(f"✗ 缺少 edl.json（先跑 mmm run select --task {task_id}）", err=True)
         raise typer.Exit(1)
@@ -786,7 +786,7 @@ def export_jianying(
     if _skip_if_done(task_id, "export-jianying", anchor, force=force):
         return
 
-    videos = {v["video_id"]: db.PROJECT_ROOT / v["source_path"] / "source.mp4"
+    videos = {v["video_id"]: db.DATA_ROOT / v["source_path"] / "source.mp4"
               for v in catalog.task_videos(task_id)}
     summary = stage_jianying.export(
         task_dir, videos, draft_name, task_id=task_id,
@@ -849,7 +849,7 @@ def locate(task_id: str, open_dir: bool = typer.Option(False, "--open", help="�
     if open_dir:
         import subprocess
 
-        subprocess.run(["open", str(db.PROJECT_ROOT / info["paths"]["task_dir"])])
+        subprocess.run(["open", str(db.DATA_ROOT / info["paths"]["task_dir"])])
 
 
 @app.command("find")
@@ -920,7 +920,7 @@ def locate_keep(
         typer.echo("提示: 加 `--write` 写入 task.json.keep_requirements（自动备份原文件）。")
         return
 
-    cfg_path = db.PROJECT_ROOT / "tasks" / task_id / "task.json"
+    cfg_path = db.DATA_ROOT / "tasks" / task_id / "task.json"
     if not cfg_path.exists():
         typer.echo(f"✗ 缺少 {cfg_path}", err=True)
         raise typer.Exit(1)
@@ -958,7 +958,7 @@ def fix_keep(
     """阶段2后：把 keep_requirements 的近似秒数吸附到 ASR 台词语音边界，并标注台词。"""
     from .locate import asr_path, load_words, snap_interval
 
-    cfg_path = db.PROJECT_ROOT / "tasks" / task_id / "task.json"
+    cfg_path = db.DATA_ROOT / "tasks" / task_id / "task.json"
     if not cfg_path.exists():
         typer.echo(f"✗ 缺少 {cfg_path}", err=True)
         raise typer.Exit(1)

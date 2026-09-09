@@ -48,19 +48,19 @@ def build_bgm_track(
     narration_regions: 解说段区间（全局时间），BGM 压低
     raw_insert_regions: raw_insert 段区间，BGM 进一步压低
     """
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
 
     narration_regions = narration_regions or []
     raw_insert_regions = raw_insert_regions or []
 
-    files = [Path(p) if Path(p).is_absolute() else PROJECT_ROOT / p for p in playlist]
+    files = [Path(p) if Path(p).is_absolute() else DATA_ROOT / p for p in playlist]
     missing = [str(f) for f in files if not f.exists()]
     if missing:
         raise FileNotFoundError(f"BGM 文件不存在: {', '.join(missing)}")
 
     if not files:
         # 无 BGM 配置：输出静音轨
-        out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm_silence.wav")
+        out_path = out_path or (DATA_ROOT / "workspace" / "_bgm_silence.wav")
         _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "lavfi", "-i",
               f"anullsrc=r={SAMPLE_RATE}:cl=stereo", "-t", str(total_duration),
               "-ac", str(CHANNELS), str(out_path)])
@@ -140,12 +140,12 @@ def build_bgm_track(
                 volume_filter += f",volume={10**(extra_db/20):.4f}:enable='{raw_enable}'"
             volume_filter += f",{outro_fade}"
 
-            out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm_ducked.wav")
+            out_path = out_path or (DATA_ROOT / "workspace" / "_bgm_ducked.wav")
             _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
                   "-af", volume_filter, "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS),
                   "-t", str(total_duration), str(out_path)])
         else:
-            out_path = out_path or (PROJECT_ROOT / "workspace" / "_bgm.wav")
+            out_path = out_path or (DATA_ROOT / "workspace" / "_bgm.wav")
             _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
                   "-af", outro_fade, "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS),
                   "-t", str(total_duration), str(out_path)])
@@ -155,9 +155,9 @@ def build_bgm_track(
 
 def from_task(task_id: str, total_duration: float) -> Path:
     """读取 tasks/{task_id}/task.json 与 edl.json，生成 BGM 轨。"""
-    from .db import PROJECT_ROOT
+    from .paths import DATA_ROOT
 
-    task_dir = PROJECT_ROOT / "tasks" / task_id
+    task_dir = DATA_ROOT / "tasks" / task_id
     cfg = json.loads((task_dir / "task.json").read_text())
     edl = json.loads((task_dir / "edl.json").read_text())
 
@@ -167,7 +167,7 @@ def from_task(task_id: str, total_duration: float) -> Path:
     raw_regions = [(c["start"], c["end"]) for c in edl["clips"]
                    if c.get("type") == "raw_insert"]
 
-    out_dir = PROJECT_ROOT / "output" / task_id
+    out_dir = DATA_ROOT / "output" / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
     return build_bgm_track(
         playlist, total_duration,
