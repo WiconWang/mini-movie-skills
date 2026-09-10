@@ -1,4 +1,4 @@
-"""系列级 TTS 发音兜底词库。
+"""游戏级 TTS 发音兜底词库。
 
 词库只做 fallback：LLM 已给出的发音保持优先，词库仅在 LLM 未识别该词时补齐。
 """
@@ -18,11 +18,11 @@ PINYIN_RE = re.compile(
 )
 
 
-def load_series_pronunciations(series: str, version: str = "") -> list[PronunciationRule]:
-    """按系列和版本加载兜底发音；version 条目覆盖同词 common 条目。"""
-    if not series:
+def load_series_pronunciations(game: str, version: str = "") -> list[PronunciationRule]:
+    """按游戏和版本加载兜底发音；version 条目覆盖同词 common 条目。"""
+    if not game:
         return []
-    path = CODE_ROOT / "config" / "tts" / f"{series}.yaml"
+    path = CODE_ROOT / "config" / "tts" / f"{game}.yaml"
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

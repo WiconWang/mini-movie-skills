@@ -1,5 +1,5 @@
-# 原神系列 · 类型适配层配置
-# 任务创建时继承（catalog.create_task），task.json 可逐项覆盖
+# 原神 · 类型适配层配置（game code: genshin）
+# 任务创建时继承（catalog.claim_task），task.json 可逐项覆盖
 # 字段含义见设计文档 §2 类型适配层、§4 阶段7
 
 # 画面分级表（E→A 选片优先级；当前硬编码在 stage_index.classify，
@@ -11,8 +11,8 @@ class_table:
   B: 对话画面（有台词、有运镜/动作）
   A: 静态对话（有台词、固定机位、带 UI）
 
-# 成片命名模板（字段：task_id/series/version/chapter/video_id）
-title_template: "原神{version}-{chapter}"
+# 成片命名模板（字段：task_id/game/version/quest/quest_slug）
+title_template: "原神{version}-{quest}"
 
 # BGM / 片头为版本物料，不在系列 yaml 配置：
 # 建任务时由 `mmm task-create --bgm-dir <目录> --intro-dir <目录>` 扫码生成清单写入 task.json，

@@ -165,7 +165,7 @@ class LLMRouteTests(unittest.TestCase):
 class NarrateReferenceTests(unittest.TestCase):
     def test_low_and_high_reference_validation(self):
         timeline = {
-            "video_id": "v1",
+            "asset_id": "v1",
             "lines": [
                 {"id": 1, "text": "一", "align": "matched"},
                 {"id": 2, "text": "二", "align": "unvoiced"},
@@ -173,14 +173,14 @@ class NarrateReferenceTests(unittest.TestCase):
             "shots": [],
         }
         plan = stage_narrate.SegmentPlan(
-            video_id="v1",
+            asset_id="v1",
             chunk_id="chunk_001",
             segment_id="v1::chunk_001",
             timeline=timeline,
             prompt="",
         )
         valid = {
-            "video_id": "v1",
+            "asset_id": "v1",
             "chunk_id": "chunk_001",
             "segment_id": "v1::chunk_001",
             "beats": [{
@@ -247,10 +247,10 @@ class NarrateReferenceTests(unittest.TestCase):
 class NarratePipelineTests(unittest.TestCase):
     def test_human_edited_final_is_protected_without_force(self):
         timeline = {
-            "videos": [{"video_id": "v1", "path": "v1.mp4"}],
+            "videos": [{"asset_id": "v1", "path": "v1.mp4"}],
             "lines": [{
                 "id": 1,
-                "video_id": "v1",
+                "asset_id": "v1",
                 "start": 0.0,
                 "end": 1.0,
                 "speaker": "角色",
@@ -303,20 +303,20 @@ class NarratePipelineTests(unittest.TestCase):
         ]
         timeline = {
             "videos": [
-                {"video_id": "v1", "path": "v1.mp4"},
-                {"video_id": "v2", "path": "v2.mp4"},
+                {"asset_id": "v1", "path": "v1.mp4"},
+                {"asset_id": "v2", "path": "v2.mp4"},
             ],
             "lines": [
                 {
                     "id": line_id,
-                    "video_id": video_id,
+                    "asset_id": asset_id,
                     "start": start,
                     "end": end,
-                    "speaker": f"角色{video_id}",
+                    "speaker": f"角色{asset_id}",
                     "text": text,
                     "align": "matched",
                 }
-                for video_id, line_id, start, end, text in line_specs
+                for asset_id, line_id, start, end, text in line_specs
             ],
             "shots": [],
         }
@@ -329,7 +329,7 @@ class NarratePipelineTests(unittest.TestCase):
 
             if endpoint.route == "narrate_low":
                 payload = {
-                    "video_id": label.split("::", 1)[0],
+                    "asset_id": label.split("::", 1)[0],
                     "chunk_id": label.split("::", 1)[1],
                     "segment_id": label,
                     "beats": [{
@@ -418,8 +418,8 @@ class NarratePipelineTests(unittest.TestCase):
                 self.assertEqual(
                     result["narration"][0]["related_line_ids"],
                     [
-                        {"video_id": "v1", "line_id": 101},
-                        {"video_id": "v2", "line_id": 201},
+                        {"asset_id": "v1", "line_id": 101},
+                        {"asset_id": "v2", "line_id": 201},
                     ],
                 )
 
@@ -444,20 +444,20 @@ class NarratePipelineTests(unittest.TestCase):
         ]
         timeline = {
             "videos": [
-                {"video_id": "v1", "path": "v1.mp4"},
-                {"video_id": "v2", "path": "v2.mp4"},
+                {"asset_id": "v1", "path": "v1.mp4"},
+                {"asset_id": "v2", "path": "v2.mp4"},
             ],
             "lines": [
                 {
                     "id": line_id,
-                    "video_id": video_id,
+                    "asset_id": asset_id,
                     "start": start,
                     "end": end,
-                    "speaker": f"角色{video_id}",
+                    "speaker": f"角色{asset_id}",
                     "text": text,
                     "align": "matched",
                 }
-                for video_id, line_id, start, end, text in line_specs
+                for asset_id, line_id, start, end, text in line_specs
             ],
             "shots": [],
         }
@@ -468,7 +468,7 @@ class NarratePipelineTests(unittest.TestCase):
             #   LOW 分片 label 形如 "v1::chunk_001"；HIGH 融合 label 形如 "fuse:out"
             if label and "::" in label:
                 payload = {
-                    "video_id": label.split("::", 1)[0],
+                    "asset_id": label.split("::", 1)[0],
                     "chunk_id": label.split("::", 1)[1],
                     "segment_id": label,
                     "beats": [{

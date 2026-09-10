@@ -168,19 +168,25 @@ def from_task(task_id: str, body_path: Path) -> Path:
     outro: Path | None = None
     for item in composition:
         t = item.get("type")
-        src = item.get("src")
-        if t == "cover" and src:
+        # composition 以 asset_id 引用版本级物料（0910 规范 §12.5）
+        p = None
+        if item.get("asset_id") is not None:
+            from .catalog import asset_by_id
+
+            a = asset_by_id(item["asset_id"])
+            p = DATA_ROOT / a["path"]
+        elif item.get("src"):
+            src = item["src"]
             p = Path(src) if Path(src).is_absolute() else DATA_ROOT / src
+        if t == "cover" and p is not None:
             if not p.exists():
                 raise FileNotFoundError(f"Cover 图片不存在: {p}")
             cover = p
-        elif t in ("intro_common", "intro_special") and src:
-            p = Path(src) if Path(src).is_absolute() else DATA_ROOT / src
+        elif t in ("intro", "intro_common", "intro_special") and p is not None:
             if not p.exists():
                 raise FileNotFoundError(f"片头素材不存在: {p}")
             intro_files.append(p)
-        elif t == "outro" and src:
-            p = Path(src) if Path(src).is_absolute() else DATA_ROOT / src
+        elif t == "outro" and p is not None:
             if not p.exists():
                 raise FileNotFoundError(f"片尾图片不存在: {p}")
             outro = p

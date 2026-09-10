@@ -92,8 +92,8 @@ def _video_duration(video: Path) -> float:
 
 
 def _nearest_timed_video(lines: list[dict], idx: int,
-                          offsets: list[tuple[str, float, float]]) -> str:
-    """未匹配/无配音台词行按前后最近的有时间台词行推断归属视频。"""
+                           offsets: list[tuple[int, float, float]]) -> int:
+    """未匹配/无配音台词行按前后最近的有时间台词行推断归属资产。"""
     n = len(lines)
     for dist in range(0, max(idx, n - idx) + 1):
         for j in sorted({idx - dist, idx + dist}):
@@ -102,9 +102,9 @@ def _nearest_timed_video(lines: list[dict], idx: int,
             start = lines[j].get("start")
             if start is None:
                 continue
-            for vid, off, dur in offsets:
+            for aid, off, dur in offsets:
                 if off <= start < off + dur:
-                    return vid
+                    return aid
             return offsets[-1][0]
     return offsets[0][0]
 
@@ -112,74 +112,79 @@ def _nearest_timed_video(lines: list[dict], idx: int,
 def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
     """多视频任务全局对齐（设计文档 §4 阶段2 多视频任务的对齐）。
 
-    流程：逐视频确保共享 ASR（asr.json 断点复用）→ 按 seq 以 offset 拼成全局词流
+    流程：逐资产确保共享 ASR（asr.json 断点复用）→ 按 seq 以 offset 拼成全局词流
     → 任务级完整台词一次对齐 → 按 offset 写入任务目录 lines.json（本地时间）。
-    台词来源：task.json 的 script_path（任务级整份台词），缺省取首个视频的台词。
+    台词来源：quest 的 dialog 资产（resolve_dialog）。
 
-    lines.json 属于“素材 × 任务台词”的结果，不写入共享视频工作区，
-    避免多个任务引用同一源视频时互相覆盖。
+    lines.json 属于“资产 × 任务台词”的结果，不写入共享视频工作区，
+    避免多个任务引用同一源视频时互相覆盖。行/镜头归属记 asset_id，
+    workspace 目录用 asset_key。
     """
-    from .catalog import task_videos
+    from .catalog import quest_of, resolve_dialog, task_assets
     from .paths import DATA_ROOT
     from .stage_align import AsrWord, align
 
-    videos = task_videos(task_id)
+    task_dir = DATA_ROOT / "tasks" / task_id
+    cfg_path = task_dir / "task.json"
+    if not cfg_path.exists():
+        raise KeyError(f"任务不存在: {task_id}（先 mmm task-create --claim）")
+    task_cfg = json.loads(cfg_path.read_text())
+    quest_id = task_cfg.get("quest_id")
+    if quest_id is None:
+        # 兼容旧 task.json：按 game/version/slug 反查 quest
+        q = quest_of(task_cfg.get("game", ""), str(task_cfg.get("version") or ""),
+                     task_cfg.get("quest_slug", ""))
+        quest_id = q["id"]
+    videos = [a for a in task_assets(task_id) if a["kind"] == "video"]
     if not videos:
         raise KeyError(f"任务无关联素材: {task_id}")
 
-    task_dir = DATA_ROOT / "tasks" / task_id
-    task_workspace = task_dir / "workspace"
-    task_cfg = {}
-    cfg_path = task_dir / "task.json"
-    if cfg_path.exists():
-        task_cfg = json.loads(cfg_path.read_text())
-    script_rel = task_cfg.get("script_path") or videos[0].get("script_path")
-    if not script_rel:
-        raise KeyError(f"任务 {task_id} 无台词来源（task.json script_path 或素材 script_path）")
-    script_path = DATA_ROOT / script_rel
+    script_path = resolve_dialog(quest_id)
 
-    # 1. 逐视频 ASR + 拼接全局词流
-    offsets: list[tuple[str, float, float]] = []   # (video_id, offset, duration)
+    # 1. 逐资产 ASR + 拼接全局词流
+    offsets: list[tuple[int, float, float]] = []   # (asset_id, offset, duration)
     global_words: list[AsrWord] = []
     offset = 0.0
     for v in videos:
-        vid = v["video_id"]
-        video = DATA_ROOT / v["source_path"] / "source.mp4"
-        work = DATA_ROOT / "workspace" / vid
+        aid, akey = v["id"], v["asset_key"]
+        video = DATA_ROOT / v["path"]
+        work = DATA_ROOT / "workspace" / akey
         words = ensure_asr(video, work, model_size)
         for w in words:
             global_words.append(AsrWord(text=w["text"],
                                         start=w["start"] + offset,
                                         end=w["end"] + offset))
         dur = _video_duration(video)
-        offsets.append((vid, offset, dur))
+        offsets.append((aid, offset, dur))
         offset += dur
 
     # 2. 全局对齐
     script_lines = load_script(script_path)
     result = align(script_lines, global_words)
 
-    # 3. 按 offset 拆回各视频 lines.json（本地时间，保持原 id 供全局时间轴使用）
-    per_video: dict[str, list[dict]] = {vid: [] for vid, _, _ in offsets}
+    # 3. 按 offset 拆回各资产 lines.json（本地时间，保持原 id 供全局时间轴使用）
+    task_workspace = task_dir / "workspace"
+    per_asset: dict[int, list[dict]] = {aid: [] for aid, _, _ in offsets}
+    key_of = {v["id"]: v["asset_key"] for v in videos}
     for idx, line in enumerate(result["lines"]):
         if line["start"] is None:
-            # 未匹配行归到台词顺序上最近的已匹配视频；找不到则归首个视频
-            vid = _nearest_timed_video(result["lines"], idx, offsets)
-            line["video_id"] = vid
-            per_video[vid].append(line)
+            # 未匹配行归到台词顺序上最近的已匹配资产；找不到则归首个资产
+            aid = _nearest_timed_video(result["lines"], idx, offsets)
+            line["asset_id"] = aid
+            per_asset[aid].append(line)
             continue
-        vid, off = next(
-            ((vid, off) for vid, off, dur in offsets if off <= line["start"] < off + dur),
+        aid, off = next(
+            ((aid, off) for aid, off, dur in offsets if off <= line["start"] < off + dur),
             (offsets[-1][0], offsets[-1][1]))
-        line["video_id"] = vid
+        line["asset_id"] = aid
         line["local_start"] = round(line["start"] - off, 2)
         line["local_end"] = round(line["end"] - off, 2)
-        per_video[vid].append({**line, "start": line["local_start"], "end": line["local_end"]})
+        per_asset[aid].append({**line, "start": line["local_start"], "end": line["local_end"]})
 
     # 对齐结果变化后，旧的任务级时间轴和全局时间轴不再可信。
     (task_dir / "global_timeline.json").unlink(missing_ok=True)
-    for vid, lines in per_video.items():
-        work = task_workspace / vid
+    for aid, lines in per_asset.items():
+        work = task_workspace / key_of[aid]
         work.mkdir(parents=True, exist_ok=True)
         (work / "timeline.json").unlink(missing_ok=True)
         matched = sum(1 for l in lines if l["align"] == "matched")
@@ -199,7 +204,9 @@ def align_task(task_id: str, model_size: str = ASR_MODEL_SIZE) -> dict:
         json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report = dict(result["report"])
-    report["per_video"] = {vid: json.loads(
-        (task_workspace / vid / "lines.json").read_text())["report"]
-        for vid, _, _ in offsets}
+    report["per_asset"] = {str(aid): json.loads(
+        (task_workspace / key_of[aid] / "lines.json").read_text())["report"]
+        for aid, _, _ in offsets}
+    # 兼容旧调用方（report["per_video"]）
+    report["per_video"] = report["per_asset"]
     return report

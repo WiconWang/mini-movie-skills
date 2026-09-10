@@ -56,7 +56,7 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
            task_id: str = "", drafts_dir: Path | None = None,
            bgm_playlist: list[str] | None = None,
            bgm_volume: float = BGM_VOLUME) -> dict:
-    """按 edl.json 生成剪映草稿。videos: video_id → 源视频路径。
+    """按 edl.json 生成剪映草稿。videos: asset_id → 源视频路径。
 
     task_id 非空时：导出后登记 footage_usage 并归档 edl.final.json
     （与导出器A 同一口径，register_usage 幂等，两导出器都跑不会重复登记）。
@@ -111,9 +111,9 @@ def export(work_dir: Path, videos: dict[str, Path], draft_name: str, *,
     t = 0.0
     seg_durations: list[float] = []
     for i, clip in enumerate(clips):
-        video = videos.get(clip["video_id"])
+        video = videos.get(clip["asset_id"])
         if video is None:
-            raise KeyError(f"EDL 片段引用未提供的 video_id: {clip['video_id']}")
+            raise KeyError(f"EDL 片段引用未提供的 asset_id: {clip['asset_id']}")
         v_dur = clip["end"] - clip["start"]
         wav = None
         a_dur = 0.0

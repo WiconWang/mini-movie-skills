@@ -119,29 +119,30 @@ def run(work_dir: Path, *, lines_path: Path | None = None,
 
 
 def build_global(task_id: str) -> dict:
-    """阶段4.5：多视频合流 → tasks/{task_id}/global_timeline.json。
+    """阶段4.5：多资产合流 → tasks/{task_id}/global_timeline.json。
 
-    按 task_map.seq 拼接各视频 timeline，内部维护 offset 表；
-    每条 shot/line/fade 保留 video_id 与 local_start/local_end，
+    按 task_asset.seq 拼接各资产 timeline，内部维护 offset 表；
+    每条 shot/line/fade 保留 asset_id 与 local_start/local_end，
     start/end 为任务全局时间（设计文档 §4 阶段4 多视频合流）。
+    workspace 目录用 asset_key。
     """
-    from .catalog import task_videos
+    from .catalog import task_assets
     from .paths import DATA_ROOT
 
-    videos = task_videos(task_id)
-    if not videos:
-        raise KeyError(f"任务无关联素材: {task_id}（先 mmm task-create）")
+    assets = [a for a in task_assets(task_id) if a["kind"] == "video"]
+    if not assets:
+        raise KeyError(f"任务无关联素材: {task_id}（先 mmm task-create --claim）")
 
     m_shots: list[dict] = []
     m_lines: list[dict] = []
     m_fades: list[dict] = []
-    videos_meta = []
+    assets_meta = []
     offset = 0.0
     task_dir = DATA_ROOT / "tasks" / task_id
-    for v in videos:
-        vid = v["video_id"]
-        shared_work = DATA_ROOT / "workspace" / vid
-        task_work = task_dir / "workspace" / vid
+    for v in assets:
+        aid, akey = v["id"], v["asset_key"]
+        shared_work = DATA_ROOT / "workspace" / akey
+        task_work = task_dir / "workspace" / akey
         task_lines = task_work / "lines.json"
         tl_path = task_work / "timeline.json"
         if task_lines.exists() and not tl_path.exists():
@@ -151,27 +152,27 @@ def build_global(task_id: str) -> dict:
         tl = json.loads(tl_path.read_text(encoding="utf-8"))
         dur = max((s["end"] for s in tl["shots"]), default=0.0)
         for s in tl["shots"]:
-            m_shots.append({**s, "video_id": vid,
+            m_shots.append({**s, "asset_id": aid,
                             "local_start": s["start"], "local_end": s["end"],
                             "start": round(s["start"] + offset, 3),
                             "end": round(s["end"] + offset, 3)})
         for l in tl["lines"]:
-            nl = {**l, "video_id": vid}
+            nl = {**l, "asset_id": aid}
             if l.get("start") is not None:
                 nl["local_start"], nl["local_end"] = l["start"], l["end"]
                 nl["start"] = round(l["start"] + offset, 2)
                 nl["end"] = round(l["end"] + offset, 2)
             m_lines.append(nl)
         for f in tl.get("fades", []):
-            m_fades.append({**f, "video_id": vid,
+            m_fades.append({**f, "asset_id": aid,
                             "start": round(f["start"] + offset, 3),
                             "end": round(f["end"] + offset, 3)})
-        videos_meta.append({"video_id": vid, "offset": round(offset, 3),
-                            "duration": round(dur, 3)})
+        assets_meta.append({"asset_id": aid, "asset_key": akey,
+                            "offset": round(offset, 3), "duration": round(dur, 3)})
         offset += dur
 
     counts = {c: sum(1 for s in m_shots if s["class"] == c) for c in "EDCBAX"}
-    out = {"task_id": task_id, "videos": videos_meta,
+    out = {"task_id": task_id, "videos": assets_meta,
            "shots": m_shots, "lines": m_lines, "fades": m_fades,
            "stats": {"shots": len(m_shots), "by_class": counts,
                      "duration": round(offset, 1)}}

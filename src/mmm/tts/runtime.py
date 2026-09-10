@@ -461,7 +461,7 @@ def create_tts_plan(work_dir: Path, tts_cfg: dict, *, profile: str | None = None
     if task_json.exists():
         task_cfg = _read_json(task_json)
     glossary = load_series_pronunciations(
-        task_cfg.get("series", ""), str(task_cfg.get("version") or "")
+        task_cfg.get("game", ""), str(task_cfg.get("version") or "")
     )
 
     resolved = resolve_profile(tts_cfg, profile)

@@ -146,7 +146,7 @@ function render(){
     div.innerHTML = `
       <div class="frames">${(c.frames||[]).map(f=>`<img src="${f}" loading="lazy">`).join('') || '<span class="meta">无帧</span>'}</div>
       <div class="body">
-        <div class="headrow">${badge}<span class="time">${c.video_id} · ${fmt(c.start)} → ${fmt(c.end)}（源 ${(c.end-c.start).toFixed(1)}s${c.keep_audio ? '' : ` · 解说约 ${clipDuration(c).toFixed(1)}s`}）</span></div>
+        <div class="headrow">${badge}<span class="time">${c.asset_id} · ${fmt(c.start)} → ${fmt(c.end)}（源 ${(c.end-c.start).toFixed(1)}s${c.keep_audio ? '' : ` · 解说约 ${clipDuration(c).toFixed(1)}s`}）</span></div>
         <div class="narr">${renderNarr(c)}</div>
         <div class="ops">
           <button onclick="toggleCands(${i})">换镜头</button>
@@ -175,7 +175,7 @@ function toggleRange(i){ document.getElementById(`range-${i}`).classList.toggle(
 function swap(i, j){
   const k = edl.clips[i].candidates[j];
   edl.clips[i].start = k.start; edl.clips[i].end = k.end;
-  edl.clips[i].video_id = k.video_id || edl.clips[i].video_id;
+  edl.clips[i].asset_id = k.asset_id || edl.clips[i].asset_id;
   edl.clips[i].class = k.class;
   if (k.frames) edl.clips[i].frames = k.frames; else edl.clips[i].frames = [k.frame];
   markDirty(); render();
@@ -193,7 +193,7 @@ function insertRaw(i){
   const start = parseTime(prompt('高光段起点（源视频时间，可用 165 或 2:45）', '0'));
   const end = parseTime(prompt('高光段终点（可用 167 或 2:47）', '0'));
   if (!(end > start)) return;
-  edl.clips.splice(i+1, 0, { type:'raw_insert', video_id: edl.clips[i].video_id,
+  edl.clips.splice(i+1, 0, { type:'raw_insert', asset_id: edl.clips[i].asset_id,
     start, end, keep_audio:true, note:'人工插入高光段', frames:[] });
   markDirty(); render();
 }
