@@ -28,12 +28,18 @@ profiles:
     protocol: openai_chat_completions
     temperature_mode: passthrough
     max_tokens_field: max_tokens
-    input_context_tokens: 131072
-    safety_margin_tokens: 8192
+    input_context_tokens: 1000000
+    safety_margin_tokens: 16384
     timeout_seconds: 300
     retry_backoff_seconds: 5
     capabilities:
       - text
+    # DeepSeek V4.1 默认思考模式；显式固化以避免默认变更漂移。
+    # 注意：思考模式下 temperature 被服务端忽略（不报错）。
+    request_extra:
+      thinking:
+        type: enabled
+      reasoning_effort: high
 
   kimi_official:
     protocol: openai_chat_completions
