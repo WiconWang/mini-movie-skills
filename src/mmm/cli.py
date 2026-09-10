@@ -1,6 +1,7 @@
 """mmm CLI 入口。
 
 命令总览见设计文档第 11 章。闸口协议：narrate/select 完成后必须停下等待人工确认。
+身份规则（0910 规范）：video 级命令参数为 asset_key；持久化引用均为 asset_id。
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ def _skip_if_done(key: str, stage: str, *anchors: Path, force: bool = False) -> 
     typer.echo(f"⏭ {key} · {stage} 已完成且产物齐全，跳过（--force 强制重跑）")
     return True
 
+
 app = typer.Typer(help="mini-movie-maker：长视频浓缩工作流", no_args_is_help=True)
 run_app = typer.Typer(help="分阶段执行管线（阶段1~7）")
 app.add_typer(run_app, name="run")
@@ -52,17 +54,15 @@ def _parse_bgm_paths(bgm: str) -> list[str]:
 def _render_title(cfg: dict) -> str:
     """按 task.json 的 title_template 渲染成片文件名（清理非法字符）。"""
     template = cfg.get("title_template") or "{task_id}"
-    # 字段优先级：task.json 字段 > 首个视频的 catalog 字段
-    videos = cfg.get("videos", [])
-    vid0 = videos[0].get("video_id") if videos else ""
+    # 字段优先级：task.json 字段
     fields = {
         "task_id": cfg.get("task_id", ""),
-        "series": cfg.get("series", ""),
+        "game": cfg.get("game", ""),
         "version": cfg.get("version", ""),
-        "chapter": cfg.get("chapter", ""),
-        "video_id": vid0,
+        "quest": cfg.get("quest", ""),
+        "quest_slug": cfg.get("quest_slug", ""),
     }
-    # 允许 task.json 中直接写 version/chapter；缺省从 catalog 补（task-create 会写入）
+    # 允许 task.json 中直接写 version/quest；缺省从台账补（task-create --claim 会写入）
     title = template.format(**fields)
     # 清理文件名非法字符
     for ch in r'\/:*?"<>|':
@@ -88,112 +88,120 @@ def _pipeline_locked(resolve_keys):
     return decorator
 
 
-def _align_lock_keys(task: str = "", video_id: str = "", path: str = "",
+def _align_lock_keys(task: str = "", asset_key: str = "", path: str = "",
                      script: str = "", **_) -> list[str]:
     if task:
-        from .catalog import task_videos
+        from .catalog import task_assets
 
         return [f"task:{task}"] + [
-            f"video:{v['video_id']}" for v in task_videos(task)
+            f"video:{v['asset_key']}" for v in task_assets(task)
+            if v["kind"] == "video"
         ]
     if path and script:
         return [f"workspace:{Path(path).resolve()}"]
-    return [f"video:{video_id}"]
+    return [f"video:{asset_key}"]
 
 
-def _index_lock_keys(task: str = "", video_id: str = "", path: str = "",
+def _index_lock_keys(task: str = "", asset_key: str = "", path: str = "",
                      **_) -> list[str]:
     if task:
-        return [f"task:{task}", f"video:{video_id}"]
+        return [f"task:{task}", f"video:{asset_key}"]
     if path:
         return [f"workspace:{Path(path).resolve()}"]
-    return [f"video:{video_id}"]
+    return [f"video:{asset_key}"]
 
 
 @app.command("db-init")
 def db_init() -> None:
-    """按 db/schema.sql 初始化台账数据库（幂等，迁移后第一步）。"""
+    """按 db/schema.sql 初始化统一台账（幂等，迁移后第一步）。"""
     conn = db.init_db()
     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
     typer.echo(f"✓ 台账已就绪: {db.DB_PATH}  表: {', '.join(tables)}")
 
 
-@app.command("add")
-def add(
-    video_id: str,
-    series: str = typer.Option(..., "--series", "-s", help="系列（关联 config/series/ 配置）"),
-    version: str = typer.Option("", "--version", "-v"),
-    chapter: str = typer.Option("", "--chapter", "-c"),
+@app.command("add-asset")
+def add_asset(
+    game: str = typer.Option(..., "--game", "-g", help="游戏 code（genshin/zzz/starrail/wave/endfield）"),
+    version: str = typer.Option(..., "--version", "-v", help="版本号（保留小数点，如 1.6）"),
+    slug: str = typer.Option(..., "--slug", help="quest_slug（ASCII 短名，身份用）"),
+    kind: str = typer.Option(..., "--kind", "-k", help="video/dialog/bgm/cover/outro/intro"),
+    src: str = typer.Option(..., "--src", help="本地源文件路径（复制入库）"),
+    seg: int = typer.Option(0, "--seg", help="video 分P序号（quest 内剧情序号，1 起）"),
+    type: str = typer.Option("event", "--type", "-t", help="任务线类型（属性，缺省 event）"),
+    quest_name: str = typer.Option("", "--quest-name", help="任务中文名（展示用）"),
+    version_name: str = typer.Option("", "--version-name", help="版本名（如 盛夏！海岛？大冒险！）"),
+    source_url: str = typer.Option("", "--source-url", help="溯源：wiki 页 / BV+p / OST 专辑"),
+    no_hash: bool = typer.Option(False, "--no-hash", help="跳过 sha256（批量补登记逃生口）"),
 ) -> None:
-    """登记素材：校验物料 + 台词预检 + 台账登记（物料规范 §6）。"""
+    """登记素材：落新目录树 + 写 ledger（独立模式反向登记；管道模式由采集器登记）。"""
     from . import catalog
 
     try:
-        report = catalog.add_video(video_id, series, version, chapter)
-    except FileNotFoundError as e:
-        typer.echo(f"✗ {e}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"✓ 已登记 {video_id}（{series} {version} {chapter}）")
-    typer.echo(f"  台词预检: {report['lines']} 行, 无配音 {report['unvoiced']} 行"
-               + (f", ⚠ 坏行 {report['bad_lines']}" if report["bad_lines"] else ""))
-
-
-@app.command("task-create")
-@_pipeline_locked(lambda task_id="", **_: [f"task:{task_id}"])
-def task_create(
-    task_id: str,
-    videos: str = typer.Option(..., "--videos", help="逗号分隔的 video_id，顺序即剧情顺序"),
-    series: str = typer.Option("", "--series", "-s", help="系列（缺省取首个视频的系列）"),
-    bgm_dir: str = typer.Option("", "--bgm-dir", help="版本 BGM 目录（相对数据根，如 genshin/musics/1.6），扫码生成歌单"),
-    intro_dir: str = typer.Option("", "--intro-dir", help="版本片头目录（相对数据根，如 genshin/video-intros），取排序首个视频"),
-    pipeline_mode: str = typer.Option("narrate", "--pipeline-mode", help="narrate（A 模式解说）/ raw（B 模式原声高光直拼）"),
-) -> None:
-    """建任务：引用视频 + 生成 task.json（类型适配层配置继承系列默认）。
-
-    BGM / 片头为版本物料，由 --bgm-dir / --intro-dir 扫码生成清单写入 task.json；
-    不传则留空，由 Skill 在剪辑前配置确认时补扫。
-    pipeline_mode=raw（B 模式）时 subtitle_mode 缺省 none、写入 raw_select 配置块。
-    """
-    from . import catalog
-
-    video_ids = [v.strip() for v in videos.split(",") if v.strip()]
-    try:
-        task = catalog.create_task(task_id, video_ids, series,
-                                   bgm_dir=bgm_dir, intro_dir=intro_dir,
-                                   pipeline_mode=pipeline_mode)
+        report = catalog.add_asset(
+            game=game, version=version, slug=slug, kind=kind, src=src, seg=seg,
+            type=type, quest_name=quest_name, version_name=version_name,
+            source_url=source_url, no_hash=no_hash)
     except (KeyError, FileNotFoundError, ValueError) as e:
         typer.echo(f"✗ {e}", err=True)
         raise typer.Exit(1)
+    typer.echo(f"✓ 已登记 {report['asset_key']}（id={report['asset_id']}，{report['path']}）")
+    if "lines" in report:
+        typer.echo(f"  台词预检: {report['lines']} 行, 无配音 {report['unvoiced']} 行"
+                   + (f", ⚠ 坏行 {report['bad_lines']}" if report["bad_lines"] else ""))
+
+
+@app.command("task-create")
+@_pipeline_locked(lambda task_id="", **_: [f"task:{task_id}"] if task_id else [])
+def task_create(
+    game: str = typer.Option(..., "--game", "-g", help="游戏 code"),
+    version: str = typer.Option(..., "--version", "-v", help="版本号"),
+    slug: str = typer.Option(..., "--slug", help="quest_slug"),
+    mode: str = typer.Option("narrate", "--mode", "-m", help="narrate（A 模式解说）/ raw（B 模式原声高光直拼）"),
+    variant: str = typer.Option("", "--variant", help="变体后缀（-v2 等，白名单校验）"),
+) -> None:
+    """建任务：认领 quest（从 ledger 查 video+dialog 写 task_asset）+ 生成 task.json。
+
+    版本级装饰物料（bgm/cover/outro/intro）自动以 asset_id 引用写入 task.json；
+    不传 variant 则按 mode 生成标准 task_id；禁止手写 task_id 覆盖名。
+    """
+    from . import catalog
+
+    try:
+        task = catalog.claim_task(game=game, version=version, slug=slug,
+                                  mode=mode, variant=variant)
+    except (KeyError, FileNotFoundError, ValueError) as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1)
+    task_id = task["task_id"]
     n_bgm = len(task.get("bgm_playlist", []))
     n_intro = len(task.get("composition", []))
-    mode_label = "B 原声高光直拼" if pipeline_mode == "raw" else "A 解说短视频"
-    typer.echo(f"✓ 任务已创建: {task_id}（{task['series']}，{len(video_ids)} 个视频，"
-               f"模式 {mode_label}，目标 {task['target_minutes']} 分钟）")
-    typer.echo(f"  BGM 清单: {n_bgm} 首" + ("" if n_bgm else "（空，须配置确认时补扫）"))
-    typer.echo(f"  片头: {n_intro} 个" + ("" if n_intro else "（无）"))
+    mode_label = "B 原声高光直拼" if mode == "raw" else "A 解说短视频"
+    typer.echo(f"✓ 任务已创建: {task_id}（{task['game']}，{len(task['assets'])} 个资产，"
+                f"模式 {mode_label}）")
+    typer.echo(f"  版本物料: BGM {n_bgm} 首，装饰 {n_intro} 个")
     typer.echo(f"  产物: tasks/{task_id}/task.json")
-    typer.echo(f"  下一步: 逐视频跑 mmm run shots/align/vision/index，然后 mmm run narrate {task_id}")
+    typer.echo(f"  下一步: 逐资产跑 mmm run shots/vision/align，然后 mmm run narrate {task_id}")
 
 
 @run_app.command("shots")
-@_pipeline_locked(lambda video_id="", path="", **_: [
-    f"workspace:{Path(path).resolve()}"] if path else [f"video:{video_id}"])
+@_pipeline_locked(lambda asset_key="", path="", **_: [
+    f"workspace:{Path(path).resolve()}"] if path else [f"video:{asset_key}"])
 def run_shots(
-    video_id: str = typer.Argument(""),
+    asset_key: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
     threshold: float = typer.Option(0.3, "--threshold", "-t", help="场景突变阈值"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段1：场景检测 + 黑白屏检测 → shots.json / fades.json。"""
-    from . import stage_shots
+    from . import catalog, stage_shots
 
     if path:
         video = Path(path)
         out_dir = db.DATA_ROOT / "workspace" / "_smoke" / video.stem
     else:
-        video = db.DATA_ROOT / "materials" / video_id / "source.mp4"
-        out_dir = db.DATA_ROOT / "workspace" / video_id
-        if _skip_if_done(video_id, "shots", out_dir / "shots.json", force=force):
+        video = catalog.resolve_video(asset_key)
+        out_dir = db.DATA_ROOT / "workspace" / asset_key
+        if _skip_if_done(asset_key, "shots", out_dir / "shots.json", force=force):
             return
     if not video.exists():
         typer.echo(f"✗ 视频不存在: {video}", err=True)
@@ -201,43 +209,42 @@ def run_shots(
 
     summary = stage_shots.run(video, out_dir, threshold)
     typer.echo(f"✓ {video.name}: 时长 {summary['duration']}s, "
-               f"切点 {summary['cuts']}, 镜头 {summary['shots']}, 黑白屏 {summary['fades']}")
+                f"切点 {summary['cuts']}, 镜头 {summary['shots']}, 黑白屏 {summary['fades']}")
     typer.echo(f"  产物: {out_dir}/shots.json, fades.json")
     if not path:
-        db.record_job(video_id, "shots", "done",
+        db.record_job(asset_key, "shots", "done",
                       f"{summary['shots']} 镜头, 黑白屏 {summary['fades']}")
 
 
 @run_app.command("align")
 @_pipeline_locked(_align_lock_keys)
 def run_align(
-    video_id: str = typer.Argument(""),
+    asset_key: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用）"),
     script: str = typer.Option("", "--script", help="台词 JSONL 路径（冒烟测试用）"),
     model: str = typer.Option("medium", "--model", "-m", help="ASR 模型档位"),
-    task: str = typer.Option("", "--task", help="任务模式：多视频全局对齐（台词横跨全部视频）"),
+    task: str = typer.Option("", "--task", help="任务模式：多资产全局对齐（台词横跨全部资产）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段2：ASR + 台词对齐 → asr.json / lines.json（含覆盖率报告）。"""
-    from . import stage_asr
+    from . import catalog, stage_asr
 
     if task:
-        from . import catalog
-
         task_dir = db.DATA_ROOT / "tasks" / task
+        assets = [a for a in catalog.task_assets(task) if a["kind"] == "video"]
         anchors = [task_dir / "align_global.json"] + [
-            task_dir / "workspace" / v["video_id"] / "lines.json"
-            for v in catalog.task_videos(task)]
+            task_dir / "workspace" / v["asset_key"] / "lines.json"
+            for v in assets]
         if _skip_if_done(task, "align", *anchors, force=force):
             return
         report = stage_asr.align_task(task, model)
         typer.echo(f"✓ 任务 {task} 全局对齐: 总行数 {report['total']}, "
-                   f"matched {report['matched']}, interpolated {report['interpolated']}, "
-                   f"unmatched {report['unmatched']}, unvoiced {report['unvoiced']}, "
-                   f"覆盖率 {report['coverage']:.1%}")
-        for vid, r in report["per_video"].items():
-            typer.echo(f"  分段 {vid}: {r['matched']} matched / {r['voiced_total']} 行, "
-                       f"覆盖率 {r['coverage']:.1%}")
+                    f"matched {report['matched']}, interpolated {report['interpolated']}, "
+                    f"unmatched {report['unmatched']}, unvoiced {report['unvoiced']}, "
+                    f"覆盖率 {report['coverage']:.1%}")
+        for aid, r in report["per_asset"].items():
+            typer.echo(f"  资产 {aid}: {r['matched']} matched / {r['voiced_total']} 行, "
+                        f"覆盖率 {r['coverage']:.1%}")
         if report["coverage"] < 0.85:
             typer.echo("⚠ 覆盖率低于 85%，建议人工核查物料（设计文档 §6 风险表）")
         db.record_job(task, "align", "done", f"覆盖率 {report['coverage']:.1%}")
@@ -247,10 +254,10 @@ def run_align(
         video, script_p = Path(path), Path(script)
         out_dir = db.DATA_ROOT / "workspace" / "_smoke" / video.stem
     else:
-        base = db.DATA_ROOT / "materials" / video_id
-        video, script_p = base / "source.mp4", base / "script.jsonl"
-        out_dir = db.DATA_ROOT / "workspace" / video_id
-        if _skip_if_done(video_id, "align", out_dir / "lines.json", force=force):
+        video = catalog.resolve_video(asset_key)
+        script_p = catalog.resolve_dialog(catalog.asset_by_key(asset_key).get("quest_id"))
+        out_dir = db.DATA_ROOT / "workspace" / asset_key
+        if _skip_if_done(asset_key, "align", out_dir / "lines.json", force=force):
             return
     for p in (video, script_p):
         if not p.exists():
@@ -259,33 +266,33 @@ def run_align(
 
     report = stage_asr.run(video, script_p, out_dir, model)
     typer.echo(f"✓ {video.name}: 总行数 {report['total']}, "
-               f"matched {report['matched']}, interpolated {report['interpolated']}, "
-               f"unmatched {report['unmatched']}, 覆盖率 {report['coverage']:.1%}")
+                f"matched {report['matched']}, interpolated {report['interpolated']}, "
+                f"unmatched {report['unmatched']}, 覆盖率 {report['coverage']:.1%}")
     if report["coverage"] < 0.85:
         typer.echo("⚠ 覆盖率低于 85%，建议人工核查物料（设计文档 §6 风险表）")
     typer.echo(f"  产物: {out_dir}/asr.json, lines.json")
     if not (path and script):
-        db.record_job(video_id, "align", "done", f"覆盖率 {report['coverage']:.1%}")
+        db.record_job(asset_key, "align", "done", f"覆盖率 {report['coverage']:.1%}")
 
 
 @run_app.command("vision")
-@_pipeline_locked(lambda video_id="", path="", **_: [
-    f"workspace:{Path(path).resolve()}"] if path else [f"video:{video_id}"])
+@_pipeline_locked(lambda asset_key="", path="", **_: [
+    f"workspace:{Path(path).resolve()}"] if path else [f"video:{asset_key}"])
 def run_vision(
-    video_id: str = typer.Argument(""),
+    asset_key: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给视频路径（冒烟测试用，跳过台账）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段3：抽帧 + 视觉理解 → shots_meta.json。"""
-    from . import stage_vision
+    from . import catalog, stage_vision
 
     if path:
         video = Path(path)
         out_dir = db.DATA_ROOT / "workspace" / "_smoke" / video.stem
     else:
-        video = db.DATA_ROOT / "materials" / video_id / "source.mp4"
-        out_dir = db.DATA_ROOT / "workspace" / video_id
-        if _skip_if_done(video_id, "vision", out_dir / "shots_meta.json", force=force):
+        video = catalog.resolve_video(asset_key)
+        out_dir = db.DATA_ROOT / "workspace" / asset_key
+        if _skip_if_done(asset_key, "vision", out_dir / "shots_meta.json", force=force):
             return
     if not video.exists():
         typer.echo(f"✗ 视频不存在: {video}", err=True)
@@ -294,39 +301,42 @@ def run_vision(
     summary = stage_vision.run(video, out_dir)
     reused = summary.get("reused", 0)
     typer.echo(f"✓ {video.name}: 分析 {summary['total']} 个镜头"
-               f"{f'（断点复用 {reused}）' if reused else ''}, 失败 {len(summary['errors'])}")
+                f"{f'（断点复用 {reused}）' if reused else ''}, 失败 {len(summary['errors'])}")
     typer.echo(f"  产物: {out_dir}/shots_meta.json")
     if not path:
         status = "done" if not summary["errors"] else "failed"
-        db.record_job(video_id, "vision", status,
+        db.record_job(asset_key, "vision", status,
                       f"{summary['total']} 镜头, 失败 {summary['errors']}")
 
 
 @run_app.command("index")
 @_pipeline_locked(_index_lock_keys)
 def run_index(
-    video_id: str = typer.Argument(""),
-    task: str = typer.Option("", "--task", help="任务模式：生成任务级 timeline，避免共享视频冲突"),
+    asset_key: str = typer.Argument(""),
+    task: str = typer.Option("", "--task", help="任务模式：生成任务级 timeline，避免共享资产冲突"),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段4：合并时间轴索引 → timeline.json。"""
-    from . import stage_index
+    from . import catalog, stage_index
 
     if task:
-        from . import catalog
-
-        videos = {v["video_id"] for v in catalog.task_videos(task)}
-        if video_id not in videos:
-            typer.echo(f"✗ 任务 {task} 未关联视频: {video_id}", err=True)
+        assets = {v["id"] for v in catalog.task_assets(task)}
+        try:
+            aid = catalog.asset_by_key(asset_key)["id"]
+        except KeyError:
+            typer.echo(f"✗ 资产未登记: {asset_key}", err=True)
             raise typer.Exit(1)
-        shared_work = db.DATA_ROOT / "workspace" / video_id
-        out_dir = db.DATA_ROOT / "tasks" / task / "workspace" / video_id
+        if aid not in assets:
+            typer.echo(f"✗ 任务 {task} 未关联资产: {asset_key}", err=True)
+            raise typer.Exit(1)
+        shared_work = db.DATA_ROOT / "workspace" / asset_key
+        out_dir = db.DATA_ROOT / "tasks" / task / "workspace" / asset_key
         lines_path = out_dir / "lines.json"
         if not lines_path.exists():
             typer.echo(f"✗ 缺少任务级对齐结果: {lines_path}（先跑 mmm run align --task {task}）", err=True)
             raise typer.Exit(1)
-        if _skip_if_done(f"{task}:{video_id}", "index", out_dir / "timeline.json", force=force):
+        if _skip_if_done(f"{task}:{asset_key}", "index", out_dir / "timeline.json", force=force):
             return
         if not (shared_work / "shots.json").exists():
             typer.echo(f"✗ workspace 不存在或缺少 shots.json: {shared_work}", err=True)
@@ -335,21 +345,21 @@ def run_index(
                                 output_path=out_dir / "timeline.json")
         by_class = stats["by_class"]
         typer.echo(f"✓ 任务时间轴索引已生成: {stats['shots']} 镜头, "
-                   f"E={by_class['E']} D={by_class['D']} C={by_class['C']} B={by_class['B']} A={by_class['A']}")
+                    f"E={by_class['E']} D={by_class['D']} C={by_class['C']} B={by_class['B']} A={by_class['A']}")
         typer.echo(f"  产物: {out_dir}/timeline.json")
         if (shared_work / "shots_meta.json").exists():
-            db.record_job(f"{task}:{video_id}", "index", "done",
+            db.record_job(f"{task}:{asset_key}", "index", "done",
                           f"{stats['shots']} 镜头, 分级 {by_class}")
         else:
             typer.echo("⚠ 缺少 shots_meta.json（阶段3 未跑），分级退化为全 A；"
-                       "不标记完成，vision 完成后请重跑 index")
+                        "不标记完成，vision 完成后请重跑 index")
         return
 
     if path:
         out_dir = Path(path)
     else:
-        out_dir = db.DATA_ROOT / "workspace" / video_id
-        if _skip_if_done(video_id, "index", out_dir / "timeline.json", force=force):
+        out_dir = db.DATA_ROOT / "workspace" / asset_key
+        if _skip_if_done(asset_key, "index", out_dir / "timeline.json", force=force):
             return
     if not (out_dir / "shots.json").exists():
         typer.echo(f"✗ workspace 不存在或缺少 shots.json: {out_dir}", err=True)
@@ -358,17 +368,17 @@ def run_index(
     stats = stage_index.run(out_dir)
     by_class = stats["by_class"]
     typer.echo(f"✓ 时间轴索引已生成: {stats['shots']} 镜头, "
-               f"E={by_class['E']} D={by_class['D']} C={by_class['C']} B={by_class['B']} A={by_class['A']}")
+                f"E={by_class['E']} D={by_class['D']} C={by_class['C']} B={by_class['B']} A={by_class['A']}")
     typer.echo(f"  产物: {out_dir}/timeline.json")
     if not path:
         if (out_dir / "shots_meta.json").exists():
-            db.record_job(video_id, "index", "done",
+            db.record_job(asset_key, "index", "done",
                           f"{stats['shots']} 镜头, 分级 {by_class}")
         else:
             # 无 vision 产物时分级全 A，是中间态而非完成态——不打 done，
             # 否则 vision 补跑后守卫会错误跳过 index 重跑
             typer.echo("⚠ 缺少 shots_meta.json（阶段3 未跑），分级退化为全 A；"
-                       "不标记完成，vision 完成后请重跑 index")
+                        "不标记完成，vision 完成后请重跑 index")
 
 
 @run_app.command("narrate")
@@ -379,14 +389,14 @@ def run_narrate(
     task_id: str = typer.Argument(""),
     timeline: str = typer.Option("", "--timeline", help="直接给 timeline.json 路径（冒烟测试用，跳过 task_id）"),
     target_minutes: float = typer.Option(15.0, "--target-minutes", "-t", help="目标正片时长（分钟）"),
-    mode: str = typer.Option("auto", "--mode", help="auto/segment/oneshot（多视频合一篇用 segment）"),
+    mode: str = typer.Option("auto", "--mode", help="auto/segment/oneshot（多资产合一篇用 segment）"),
     profile: str = typer.Option("dry", "--profile", help="dry（HIGH 用 LOW LLM 省钱）/ prod（HIGH 用 HIGH LLM 精做）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
     dry_run: bool = typer.Option(False, "--dry-run", help="仅输出请求计划，不发起 LLM 请求"),
 ) -> None:
     """阶段5：生成解说稿。完成后进入闸口1，等待人工确认。
 
-    B 模式（pipeline_mode=raw）任务跳过此命令：不写解说终稿，per-line quality
+    B 模式（mode=raw）任务跳过此命令：不写解说终稿，per-line quality
     标注由 select --mode raw 内部自动跑 narrate-low-only 兜底（0 次 high 调用）。
     """
     from . import stage_index, stage_narrate
@@ -399,16 +409,16 @@ def run_narrate(
         # B 模式任务跳过 narrate（high 终稿）——quality 标注由 select-raw 兜底
         cfg = json.loads((out_dir / "task.json").read_text(encoding="utf-8")) \
             if (out_dir / "task.json").exists() else {}
-        if cfg.get("pipeline_mode") == "raw":
-            typer.echo(f"⏭ 任务 {task_id} 为 B 模式（pipeline_mode=raw），跳过 narrate（high 终稿）；"
-                       "per-line quality 标注由 mmm run select --mode raw 自动兜底")
+        if cfg.get("mode") == "raw":
+            typer.echo(f"⏭ 任务 {task_id} 为 B 模式（mode=raw），跳过 narrate（high 终稿）；"
+                        "per-line quality 标注由 mmm run select --mode raw 自动兜底")
             return
         timeline_path = out_dir / "global_timeline.json"
         if not timeline_path.exists():
-            # 阶段4.5：多视频合流（单视频任务同样走此路径，结构统一）
+            # 阶段4.5：多资产合流（单资产任务同样走此路径，结构统一）
             stats = stage_index.build_global(task_id)
             typer.echo(f"✓ 全局时间轴: {stats['shots']} 镜头, 总时长 {stats['duration']}s, "
-                       f"分级 {stats['by_class']}")
+                        f"分级 {stats['by_class']}")
     else:
         typer.echo("✗ 必须提供 task_id 或 --timeline", err=True)
         raise typer.Exit(1)
@@ -424,18 +434,18 @@ def run_narrate(
         )
         info = stage_narrate.plan_summary(plan)
         typer.echo(f"✓ narrate dry-run: mode={info['mode']}, profile={info['profile']}, "
-                   f"LOW segments={info['low_segments']}, cache hits={info['low_cache_hits']}, "
-                   f"LOW requests={info['low_requests']}, HIGH requests={info['high_requests']}")
+                    f"LOW segments={info['low_segments']}, cache hits={info['low_cache_hits']}, "
+                    f"LOW requests={info['low_requests']}, HIGH requests={info['high_requests']}")
         typer.echo(f"  HIGH: profile={info['high_profile']}, model={info['high_model']}, "
-                   f"prompt≈{info['high_prompt_tokens_estimated']} tokens, "
-                   f"context={info['high_input_context_tokens']}, "
-                   f"margin={info['high_safety_margin_tokens']}, "
-                   f"max attempts={info['high_max_attempts']}")
+                    f"prompt≈{info['high_prompt_tokens_estimated']} tokens, "
+                    f"context={info['high_input_context_tokens']}, "
+                    f"margin={info['high_safety_margin_tokens']}, "
+                    f"max attempts={info['high_max_attempts']}")
         if info["low_model"]:
             typer.echo(f"  LOW: profile={info['low_profile']}, model={info['low_model']}, "
-                       f"max attempts={info['low_max_attempts']}")
+                        f"max attempts={info['low_max_attempts']}")
         typer.echo(f"  HIGH result cache: reusable={info['high_cache_reusable']} "
-                   f"({info['high_cache_reason']})")
+                    f"({info['high_cache_reason']})")
         typer.echo("  未发起任何 LLM 请求，未产生费用，未修改任务产物")
         return
 
@@ -449,11 +459,11 @@ def run_narrate(
 
 
 @run_app.command("select")
-@_pipeline_locked(lambda video_id="", task="", path="", **_: [
+@_pipeline_locked(lambda asset_key="", task="", path="", **_: [
     f"task:{task}"] if task else (
-    [f"workspace:{Path(path).resolve()}"] if path else [f"video:{video_id}"]))
+    [f"workspace:{Path(path).resolve()}"] if path else [f"video:{asset_key}"]))
 def run_select(
-    video_id: str = typer.Argument(""),
+    asset_key: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     task: str = typer.Option("", "--task", help="任务模式：读 tasks/{task_id} 的 narration + 全局时间轴"),
     mode: str = typer.Option("", "--mode", help="narrate（A 解说选片，缺省）/ raw（B 原声高光直拼，自动跑 low-only 标注）"),
@@ -462,19 +472,21 @@ def run_select(
 ) -> None:
     """阶段6：选片段 + 自检回环 + 分镜板。完成后进入闸口2，等待人工确认。
 
-    --mode raw（或 task.json pipeline_mode=raw）→ stage_select_raw：quality + 画面
+    --mode raw（或 task.json mode=raw）→ stage_select_raw：quality + 画面
     双维度选片，生成全 raw_insert EDL；无 segments 时自动跑 narrate-low-only 兜底。
     """
+    from . import catalog
+
     select_mode = mode
     if task:
         out_dir = db.DATA_ROOT / "tasks" / task
         if _skip_if_done(task, "select", out_dir / "edl.json",
                          out_dir / "storyboard.html", force=force):
             return
-        # --mode 缺省时回退到 task.json pipeline_mode（B 任务默认走 raw）
+        # --mode 缺省时回退到 task.json mode（B 任务默认走 raw）
         if not select_mode:
             cfg = json.loads((out_dir / "task.json").read_text(encoding="utf-8"))
-            select_mode = "raw" if cfg.get("pipeline_mode") == "raw" else "narrate"
+            select_mode = "raw" if cfg.get("mode") == "raw" else "narrate"
         if select_mode == "raw":
             from . import stage_select_raw, stage_index
 
@@ -482,14 +494,19 @@ def run_select(
             rs = cfg.get("raw_select") or {}
             keep_reqs = cfg.get("keep_requirements", [])
             # B 模式跳过 narrate，global_timeline.json 由 build_global 兜底生成
-            # （A 模式借 narrate 入口顺带调；B 模式无此入口，select 前补一次，秒级复用 per-video 产物）
+            # （A 模式借 narrate 入口顺带调；B 模式无此入口，select 前补一次，秒级复用 per-asset 产物）
             timeline_path = out_dir / "global_timeline.json"
             if not timeline_path.exists():
                 stats = stage_index.build_global(task)
                 typer.echo(f"✓ 全局时间轴: {stats['shots']} 镜头, 总时长 {stats['duration']}s, "
-                           f"分级 {stats['by_class']}")
+                            f"分级 {stats['by_class']}")
+            # keep_requirements 里的 asset_key → asset_id（持久化只存 asset_id）
+            kids = {a["asset_key"]: a["id"] for a in catalog.task_assets(task)}
+            for r in keep_reqs:
+                if "asset_id" not in r and r.get("asset_key") in kids:
+                    r["asset_id"] = kids[r["asset_key"]]
             summary = stage_select_raw.run(
-                out_dir, task, timeline_name="global_timeline.json",
+                out_dir, asset_key or task, timeline_name="global_timeline.json",
                 quality_levels=rs.get("quality_levels"),
                 buffer_sec=rs.get("buffer_sec", 0.0),
                 min_shot_class=rs.get("min_shot_class", "B"),
@@ -498,17 +515,18 @@ def run_select(
                 exclude_task=task,
             )
             typer.echo(f"✓ B 模式 EDL 生成完成: {summary['clips']} 片段, "
-                       f"源视频总长 {summary['total_source_seconds']:.1f}s"
-                       f"（跳过无时间戳 {summary['skipped_no_timestamp']}，"
-                       f"画面不达标 {summary['skipped_low_class']}）")
+                        f"源视频总长 {summary['total_source_seconds']:.1f}s"
+                        f"（跳过无时间戳 {summary['skipped_no_timestamp']}，"
+                        f"画面不达标 {summary['skipped_low_class']}）")
         else:
             from . import stage_select
 
-            summary = stage_select.run(out_dir, task, timeline_name="global_timeline.json",
+            summary = stage_select.run(out_dir, asset_key or task,
+                                       timeline_name="global_timeline.json",
                                        exclude_task=task, chars_per_sec=chars_per_sec)
             typer.echo(f"✓ EDL 生成完成: {summary['clips']} 片段, "
-                       f"源视频总长 {summary['total_source_seconds']:.1f}s, "
-                       f"复用排除 {summary['excluded_used_shots']} 个已登记镜头")
+                        f"源视频总长 {summary['total_source_seconds']:.1f}s, "
+                        f"复用排除 {summary['excluded_used_shots']} 个已登记镜头")
             if summary["needs_review"]:
                 typer.echo(f"  ⚠ {summary['needs_review']} 个片段候选被占用耗尽，需闸口2人工复核")
         db.record_job(task, "select", "gate_waiting", "等待闸口2人工审阅 storyboard.html")
@@ -517,19 +535,19 @@ def run_select(
         return
 
     # 冒烟路径（无 task）
-    out_dir = Path(path) if path else db.DATA_ROOT / "workspace" / video_id
+    out_dir = Path(path) if path else db.DATA_ROOT / "workspace" / asset_key
     if not (out_dir / "narration.json").exists():
         typer.echo(f"✗ 缺少 narration.json: {out_dir}", err=True)
         raise typer.Exit(1)
-    label = video_id or out_dir.name
+    label = asset_key or out_dir.name
     from . import stage_select
 
     summary = stage_select.run(out_dir, label,
-                               workspace_of=lambda _vid: out_dir,
+                               workspace_of=lambda _aid: out_dir,
                                chars_per_sec=chars_per_sec)
     typer.echo(f"✓ EDL 生成完成: {summary['clips']} 片段, "
-               f"源视频总长 {summary['total_source_seconds']:.1f}s, "
-               f"复用排除 {summary['excluded_used_shots']} 个已登记镜头")
+                f"源视频总长 {summary['total_source_seconds']:.1f}s, "
+                f"复用排除 {summary['excluded_used_shots']} 个已登记镜头")
     if summary["needs_review"]:
         typer.echo(f"  ⚠ {summary['needs_review']} 个片段候选被占用耗尽，需闸口2人工复核")
     typer.echo(f"  产物: {summary['edl']}, {summary['storyboard']}")
@@ -545,7 +563,7 @@ def run_tts_plan(
 ) -> None:
     """阶段6.5：LLM 生成 TTS 表演计划 → 闸口3，等待用户确认。
 
-    B 模式（pipeline_mode=raw）任务跳过：无解说配音，不产 TTS。
+    B 模式（mode=raw）任务跳过：无解说配音，不产 TTS。
     """
     from .tts import runtime as tts_runtime
     from .llm import LLMCallError
@@ -557,8 +575,8 @@ def run_tts_plan(
     task_dir = db.DATA_ROOT / "tasks" / task_id
     cfg = json.loads((task_dir / "task.json").read_text(encoding="utf-8")) \
         if (task_dir / "task.json").exists() else {}
-    if cfg.get("pipeline_mode") == "raw":
-        typer.echo(f"⏭ 任务 {task_id} 为 B 模式（pipeline_mode=raw），跳过 tts-plan（无解说配音）")
+    if cfg.get("mode") == "raw":
+        typer.echo(f"⏭ 任务 {task_id} 为 B 模式（mode=raw），跳过 tts-plan（无解说配音）")
         return
     if _skip_if_done(
         task_id, "tts_plan", task_dir / tts_runtime.PLAN_PATH_NAME,
@@ -595,10 +613,10 @@ def run_tts_plan(
     )
     typer.echo(f"✓ TTS 表演计划已生成: {summary['segments']} 段")
     typer.echo(f"  profile/provider/model: {summary['profile']} / "
-               f"{summary['provider']} / {summary['model']}")
+                f"{summary['provider']} / {summary['model']}")
     cost = summary["cost_estimate"]
     typer.echo(f"  预估计费字符: {cost.get('billing_characters', 0)}；"
-               f"预估 TTS 费用: {cost.get('amount', 0):.4f} {cost.get('currency', 'CNY')}")
+                f"预估 TTS 费用: {cost.get('amount', 0):.4f} {cost.get('currency', 'CNY')}")
     typer.echo(f"  产物: {task_dir / tts_runtime.HTML_PATH_NAME}")
     typer.echo(f"  plan_sha256: {summary['plan_sha256']}")
     if summary["profile"] == "prod":
@@ -606,7 +624,7 @@ def run_tts_plan(
     else:
         typer.echo("  ⚠ 确认后将调用 Edge TTS；TTS 免费，但 LLM 计划调用可能已产生费用")
     typer.echo("  ⏸ 闸口3：确认无误后执行 mmm tts-approve --task "
-               f"{task_id} --plan-sha256 {summary['plan_sha256']}")
+                f"{task_id} --plan-sha256 {summary['plan_sha256']}")
 
 
 @app.command("tts-approve")
@@ -646,7 +664,7 @@ def run_tts(
 ) -> None:
     """阶段6.6：执行已批准的完整合成，并切回片段级 WAV。
 
-    B 模式（pipeline_mode=raw）任务跳过：无解说配音，不产 TTS。
+    B 模式（mode=raw）任务跳过：无解说配音，不产 TTS。
     """
     from .tts import runtime as tts_runtime
 
@@ -657,8 +675,8 @@ def run_tts(
     task_dir = db.DATA_ROOT / "tasks" / task_id
     cfg = json.loads((task_dir / "task.json").read_text(encoding="utf-8")) \
         if (task_dir / "task.json").exists() else {}
-    if cfg.get("pipeline_mode") == "raw":
-        typer.echo(f"⏭ 任务 {task_id} 为 B 模式（pipeline_mode=raw），跳过 tts（无解说配音）")
+    if cfg.get("mode") == "raw":
+        typer.echo(f"⏭ 任务 {task_id} 为 B 模式（mode=raw），跳过 tts（无解说配音）")
         return
     artifact_path = task_dir / tts_runtime.ARTIFACTS_PATH_NAME
     if not force and _skip_if_done(task_id, "tts", artifact_path, force=force):
@@ -677,7 +695,7 @@ def run_tts(
         f"{summary['segments']} 段, provider={summary['provider']}, model={summary['model']}",
     )
     typer.echo(f"✓ TTS 合成完成: {summary['segments']} 段"
-               f"（{'复用' if summary['reused'] else '新合成'}）")
+                f"（{'复用' if summary['reused'] else '新合成'}）")
     typer.echo(f"  provider/model: {summary['provider']} / {summary['model']}")
     typer.echo(f"  产物: {artifact_path}")
     for warning in summary.get("warnings") or []:
@@ -685,16 +703,16 @@ def run_tts(
 
 
 @run_app.command("render")
-@_pipeline_locked(lambda video_id="", task="", path="", video="", **_: [
+@_pipeline_locked(lambda asset_key="", task="", path="", video="", **_: [
     f"task:{task}"] if task else (
     [f"workspace:{Path(path).resolve()}"] if path and video else (
-    [f"video:{video_id}"] if video_id else [])))
+    [f"video:{asset_key}"] if asset_key else [])))
 def run_render(
-    video_id: str = typer.Argument(""),
+    asset_key: str = typer.Argument(""),
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     video: str = typer.Option("", "--video", help="直接给视频路径（冒烟测试用）"),
-    task: str = typer.Option("", "--task", help="任务模式：按 task_map 解析各片段源视频 + 命名模板 + overlay_transform + BGM + 字幕"),
-    bgm: str = typer.Option("", "--bgm", help="BGM 播放列表（分号分隔路径），缺省用 task.json bgm_playlist"),
+    task: str = typer.Option("", "--task", help="任务模式：按 task_asset 解析各片段源视频 + 命名模板 + overlay_transform + BGM + 字幕"),
+    bgm: str = typer.Option("", "--bgm", help="BGM 播放列表（分号分隔路径），缺省用 task.json bgm_playlist（asset_id 引用）"),
     subtitle: str = typer.Option("", "--subtitle", help="字幕模式 overlay/letterbox/none，缺省用 task.json subtitle_mode"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
@@ -704,8 +722,8 @@ def run_render(
     if task:
         task_dir = db.DATA_ROOT / "tasks" / task
         cfg = json.loads((task_dir / "task.json").read_text())
-        videos = {v["video_id"]: db.DATA_ROOT / v["source_path"] / "source.mp4"
-                  for v in catalog.task_videos(task)}
+        videos = {v["id"]: db.DATA_ROOT / v["path"]
+                  for v in catalog.task_assets(task) if v["kind"] == "video"}
         out_name = _render_title(cfg)
         out_dir = db.DATA_ROOT / "output" / task
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -716,34 +734,36 @@ def run_render(
         if _skip_if_done(task, "render", latest_path, force=force):
             return
         work_dir = task_dir
-        # BGM：CLI --bgm 优先，否则用 task.json bgm_playlist
+        # BGM：CLI --bgm 优先，否则用 task.json bgm_playlist（asset_id 引用）
         from . import stage_bgm
 
-        bgm_list = _parse_bgm_paths(bgm) if bgm else cfg.get("bgm_playlist", [])
+        bgm_list = _parse_bgm_paths(bgm) if bgm else catalog.resolve_bgm_playlist(
+            cfg.get("bgm_playlist", []))
         subtitle_mode = subtitle or cfg.get("subtitle_mode", "overlay")
-        pipeline_mode = cfg.get("pipeline_mode", "narrate")
+        pipeline_mode = "raw" if cfg.get("mode") == "raw" else "narrate"
     elif path and video:
         work_dir, video_p = Path(path), Path(video)
         videos = {work_dir.name: video_p}
         out_path = None
         bgm_list = _parse_bgm_paths(bgm)
         subtitle_mode = subtitle or "overlay"
-    elif video_id:
-        work_dir = db.DATA_ROOT / "workspace" / video_id
-        videos = {video_id: db.DATA_ROOT / "materials" / video_id / "source.mp4"}
+    elif asset_key:
+        work_dir = db.DATA_ROOT / "workspace" / asset_key
+        aid = catalog.asset_by_key(asset_key)["id"]
+        videos = {aid: catalog.resolve_video(asset_key)}
         out_path = None
         bgm_list = _parse_bgm_paths(bgm)
         subtitle_mode = subtitle or "overlay"
     else:
-        typer.echo("✗ 必须提供 --task 或 video_id 或 --path + --video", err=True)
+        typer.echo("✗ 必须提供 --task 或 asset_key 或 --path + --video", err=True)
         raise typer.Exit(1)
 
     if not (work_dir / "edl.json").exists():
         typer.echo(f"✗ 缺少 edl.json: {work_dir}", err=True)
         raise typer.Exit(1)
-    for vid, p in videos.items():
+    for aid, p in videos.items():
         if not p.exists():
-            typer.echo(f"✗ 视频不存在: {p}（{vid}）", err=True)
+            typer.echo(f"✗ 视频不存在: {p}（{aid}）", err=True)
             raise typer.Exit(1)
 
     summary = stage_render.run(work_dir, videos, out_path, task_id=task or "",
@@ -756,7 +776,7 @@ def run_render(
     typer.echo(f"  产物: {summary['output']}")
     if task:
         typer.echo(f"  已登记 footage_usage: {summary['footage_registered']} 个镜头"
-                   f"（edl.final.json 已归档）")
+                    f"（edl.final.json 已归档）")
         # 最新版固定名（副本），历史时间戳版本保留不覆盖
         shutil.copy2(Path(summary["output"]), latest_path)
         typer.echo(f"  最新版: {latest_path}")
@@ -786,36 +806,24 @@ def export_jianying(
     if _skip_if_done(task_id, "export-jianying", anchor, force=force):
         return
 
-    videos = {v["video_id"]: db.DATA_ROOT / v["source_path"] / "source.mp4"
-              for v in catalog.task_videos(task_id)}
+    videos = {v["id"]: db.DATA_ROOT / v["path"]
+              for v in catalog.task_assets(task_id) if v["kind"] == "video"}
     summary = stage_jianying.export(
         task_dir, videos, draft_name, task_id=task_id,
         drafts_dir=Path(drafts_dir) if drafts_dir else None,
-        bgm_playlist=cfg.get("bgm_playlist") or None, bgm_volume=bgm_volume)
+        bgm_playlist=catalog.resolve_bgm_playlist(cfg.get("bgm_playlist") or None),
+        bgm_volume=bgm_volume)
     typer.echo(f"✓ 剪映草稿已生成: {summary['draft_name']}（{summary['clips']} 片段, "
-               f"{summary['duration']}s）")
+                f"{summary['duration']}s）")
     typer.echo(f"  草稿目录: {summary['drafts_dir']}")
     typer.echo(f"  已登记 footage_usage: {summary['footage_registered']} 个镜头（edl.final.json 已归档）")
     typer.echo("  ※ 剪映内手调不回流，成片口径以 edl.final.json 为准")
     db.record_job(task_id, "export-jianying", "done", f"草稿 {summary['draft_name']}")
 
 
-@app.command("catalog-import")
-def catalog_import() -> None:
-    """把本机 catalog.yaml 导入台账（真实登记文件不入 Git）。"""
-    from . import catalog
-
-    if not catalog.CATALOG_YAML.exists():
-        typer.echo("✗ 未找到 catalog.yaml（本机登记文件，不入 Git）")
-        typer.echo("  请先复制模板: cp catalog.example.yaml catalog.yaml，再填入本机素材")
-        raise typer.Exit(1)
-    added, updated = catalog.import_catalog()
-    typer.echo(f"✓ 台账导入完成: 新增 {added}, 更新 {updated}")
-
-
 @app.command("status")
 def status() -> None:
-    """任务 × 阶段进度总览。"""
+    """对象 key × 阶段进度总览。"""
     from . import catalog
 
     rows = catalog.status_board()
@@ -825,8 +833,8 @@ def status() -> None:
     icons = {"done": "✓", "failed": "✗", "running": "▶",
              "gate_waiting": "⏸", "pending": "·"}
     for r in rows:
-        typer.echo(f"{icons.get(r['status'], '?')} {r['task_id']:<24} {r['stage']:<10} "
-                   f"{r['status']:<12} 重试{r['retry_count']}  {r['message'] or ''}")
+        typer.echo(f"{icons.get(r['status'], '?')} {r['key']:<36} {r['stage']:<10} "
+                    f"{r['status']:<12} 重试{r['retry_count']}  {r['message'] or ''}")
 
 
 @app.command("locate")
@@ -835,13 +843,12 @@ def locate(task_id: str, open_dir: bool = typer.Option(False, "--open", help="�
     from . import catalog
 
     info = catalog.locate_task(task_id)
-    if not info["videos"]:
+    if not info["assets"]:
         typer.echo(f"✗ 未找到任务: {task_id}", err=True)
         raise typer.Exit(1)
     typer.echo(f"task_id: {info['task_id']}")
-    for v in info["videos"]:
-        typer.echo(f"  素材[{v['seq']}] {v['video_id']}  {v['series']} {v['version'] or ''} {v['chapter'] or ''}")
-        typer.echo(f"    物料: {v['source_path']}")
+    for a in info["assets"]:
+        typer.echo(f"  资产[{a['seq']}] id={a['id']} {a['asset_key']} {a['kind']} → {a['path']}")
     typer.echo(f"  任务目录: {info['paths']['task_dir']}")
     typer.echo(f"  成品目录: {info['paths']['output_dir']}")
     if info["stages"]:
@@ -854,22 +861,22 @@ def locate(task_id: str, open_dir: bool = typer.Option(False, "--open", help="�
 
 @app.command("find")
 def find(keyword: str) -> None:
-    """按系列/版本/章节名模糊检索。"""
+    """按游戏/版本/任务名/slug/asset_key 模糊检索。"""
     from . import catalog
 
-    rows = catalog.find_videos(keyword)
+    rows = catalog.find_assets(keyword)
     if not rows:
         typer.echo(f"（无匹配: {keyword}）")
         return
     for r in rows:
-        typer.echo(f"{r['video_id']:<12} {r['series']} {r['version'] or ''} {r['chapter'] or ''}  → {r['source_path']}")
+        typer.echo(f"{r['asset_key']:<36} {r['kind']:<8} → {r['path']}")
 
 
 @app.command("locate-keep")
 def locate_keep(
     task_id: str = typer.Argument(..., help="任务 ID"),
     quote: str = typer.Option(..., "--quote", "-q", help="用户台词，允许不完全准确"),
-    video: str = typer.Option("", "--video", help="限定视频；缺省自动搜已 ASR 的视频取最高分"),
+    asset: str = typer.Option("", "--asset", help="限定资产；缺省自动搜已 ASR 的资产取最高分"),
     pad: float = typer.Option(0.5, "--pad", help="区间前后各补秒数"),
     write: bool = typer.Option(False, "--write", "-w", help="写入 task.json.keep_requirements（先备份）"),
     force: bool = typer.Option(False, "--force", help="--write 时允许覆盖重叠旧区间"),
@@ -878,43 +885,44 @@ def locate_keep(
     from . import catalog
     from .locate import DEFAULT_THRESHOLD, asr_path, load_words, locate_quote
 
-    videos = catalog.task_videos(task_id)
-    if not videos:
+    assets = [a for a in catalog.task_assets(task_id) if a["kind"] == "video"]
+    if not assets:
         typer.echo(f"✗ 未找到任务: {task_id}", err=True)
         raise typer.Exit(1)
-    target = [v for v in videos if not video or v["video_id"] == video]
-    if video and not target:
-        typer.echo(f"✗ 任务 {task_id} 无视频 {video}", err=True)
+    target = [v for v in assets if not asset or v["asset_key"] == asset]
+    if asset and not target:
+        typer.echo(f"✗ 任务 {task_id} 无资产 {asset}", err=True)
         raise typer.Exit(1)
 
     candidates = []
     not_asr = []
     for v in target:
-        p = asr_path(v["video_id"], task_id)
+        p = asr_path(v["asset_key"], task_id)
         if not p:
-            not_asr.append(v["video_id"])
+            not_asr.append(v["asset_key"])
             continue
         r = locate_quote(load_words(p), quote, threshold=DEFAULT_THRESHOLD, pad=pad)
         if r:
-            r["video_id"] = v["video_id"]
+            r["asset_id"] = v["id"]
+            r["asset_key"] = v["asset_key"]
             r["asr"] = str(p)
             candidates.append(r)
 
-    if video and video in not_asr:
-        typer.echo(f"✗ {video} 尚未 ASR：先 `mmm run align {video}` 或 `mmm run align --task {task_id}`", err=True)
+    if asset and asset in not_asr:
+        typer.echo(f"✗ {asset} 尚未 ASR：先 `mmm run align {asset}` 或 `mmm run align --task {task_id}`", err=True)
         raise typer.Exit(1)
     if not candidates:
         if not_asr:
-            typer.echo("未命中。未 ASR 视频: " + ", ".join(not_asr) + "（先跑 align 再试）")
+            typer.echo("未命中。未 ASR 资产: " + ", ".join(not_asr) + "（先跑 align 再试）")
         else:
-            typer.echo("未在任何已 ASR 视频中匹配到该台词。")
+            typer.echo("未在任何已 ASR 资产中匹配到该台词。")
         raise typer.Exit(1)
 
     best = max(candidates, key=lambda r: r["score"])
     for r in candidates:
-        typer.echo(f"  {r['video_id']:<12} start={r['start']:.3f} end={r['end']:.3f} "
-                   f"score={r['score']:.2f} 匹配={r['matched_text']}")
-    typer.echo(f"选中: {best['video_id']}  [{best['start']:.3f}, {best['end']:.3f}]  score={best['score']:.2f}")
+        typer.echo(f"  {r['asset_key']:<36} start={r['start']:.3f} end={r['end']:.3f} "
+                    f"score={r['score']:.2f} 匹配={r['matched_text']}")
+    typer.echo(f"选中: {best['asset_key']}  [{best['start']:.3f}, {best['end']:.3f}]  score={best['score']:.2f}")
 
     if not write:
         typer.echo("提示: 加 `--write` 写入 task.json.keep_requirements（自动备份原文件）。")
@@ -930,11 +938,11 @@ def locate_keep(
 
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     reqs = list(cfg.get("keep_requirements") or [])
-    new = {"video_id": best["video_id"], "start": best["start"],
+    new = {"asset_id": best["asset_id"], "start": best["start"],
            "end": best["end"], "note": quote}
     overlap = [
         i for i, r in enumerate(reqs)
-        if r.get("video_id") == best["video_id"]
+        if r.get("asset_id") == best["asset_id"]
         and not (r["end"] <= new["start"] or r["start"] >= new["end"])
     ]
     if overlap and not force:
@@ -956,6 +964,7 @@ def fix_keep(
     write: bool = typer.Option(False, "--write", "-w", help="写回 task.json（先备份）"),
 ) -> None:
     """阶段2后：把 keep_requirements 的近似秒数吸附到 ASR 台词语音边界，并标注台词。"""
+    from . import catalog
     from .locate import asr_path, load_words, snap_interval
 
     cfg_path = db.DATA_ROOT / "tasks" / task_id / "task.json"
@@ -967,19 +976,19 @@ def fix_keep(
     if not reqs:
         typer.echo("该任务没有 keep_requirements。")
         return
-    videos = {v["video_id"] for v in cfg.get("videos", [])}
+    assets = {v["id"]: v["asset_key"] for v in catalog.task_assets(task_id)}
     new_reqs = []
     for r in reqs:
         nr = dict(r)
-        vid = nr.get("video_id", "")
+        aid = nr.get("asset_id")
         s0, e0 = float(nr["start"]), float(nr["end"])
-        if vid not in videos:
-            typer.echo(f"  跳过 {vid}：任务无此视频")
+        if aid not in assets:
+            typer.echo(f"  跳过 {aid}：任务无此资产")
             new_reqs.append(nr)
             continue
-        p = asr_path(vid, task_id)
+        p = asr_path(assets[aid], task_id)
         if not p:
-            typer.echo(f"  跳过 {vid}：未 ASR（先跑 `mmm run align`）")
+            typer.echo(f"  跳过 {assets[aid]}：未 ASR（先跑 `mmm run align`）")
             new_reqs.append(nr)
             continue
         snap = snap_interval(load_words(p), s0, e0, slop=slop)
@@ -988,10 +997,10 @@ def fix_keep(
             moved = abs(snap["start"] - s0) > 0.05 or abs(snap["end"] - e0) > 0.05
             nr["start"], nr["end"] = snap["start"], snap["end"]
             nr["matched_text"] = snap["matched_text"]
-            typer.echo(f"  {vid} {s0:.2f}-{e0:.2f} {'->' if moved else '='} "
-                       f"{snap['start']:.2f}-{snap['end']:.2f}  台词={snap['matched_text']}")
+            typer.echo(f"  {assets[aid]} {s0:.2f}-{e0:.2f} {'->' if moved else '='} "
+                        f"{snap['start']:.2f}-{snap['end']:.2f}  台词={snap['matched_text']}")
         else:
-            typer.echo(f"  {vid} {s0:.2f}-{e0:.2f} 保留（区间无台词）")
+            typer.echo(f"  {aid} {s0:.2f}-{e0:.2f} 保留（区间无台词）")
             nr["matched_text"] = ""
         new_reqs.append(nr)
     if not write:

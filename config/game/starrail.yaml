@@ -1,0 +1,17 @@
+# 星穹铁道 · 类型适配层配置（game code: starrail）
+# 任务创建时继承（catalog.claim_task），task.json 可逐项覆盖
+# 占位默认值：首个 starrail 任务认领后按需细化（画面分级/字幕样式/TTS）。
+
+# 成片命名模板（字段：task_id/game/version/quest/quest_slug）
+title_template: "星穹铁道{version}-{quest}"
+
+target_minutes: 15
+
+# 字幕模式：overlay（白边描边压画面）/ letterbox（黑边电影画幅）/ none
+subtitle_mode: overlay
+
+subtitle: {}
+
+tts: {}
+
+output: {width: 1920, height: 1080, fps: 30}

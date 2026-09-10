@@ -161,7 +161,9 @@ def from_task(task_id: str, total_duration: float) -> Path:
     cfg = json.loads((task_dir / "task.json").read_text())
     edl = json.loads((task_dir / "edl.json").read_text())
 
-    playlist = cfg.get("bgm_playlist", [])
+    from .catalog import resolve_bgm_playlist
+
+    playlist = resolve_bgm_playlist(cfg.get("bgm_playlist", []))
     narration_regions = [(c["start"], c["end"]) for c in edl["clips"]
                          if c.get("type") == "narration_clip"]
     raw_regions = [(c["start"], c["end"]) for c in edl["clips"]

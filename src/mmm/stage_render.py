@@ -199,7 +199,7 @@ def synthesize(text: str, out_wav: Path, tts_cfg: dict | None = None) -> float:
     规划说明（尚未接入正式实现）：
     - dry/smoke 阶段继续用现有 say/edge，避免正式云服务费用影响流程验证。
     - 正式阶段计划接 MiniMax speech-2.8-hd：POST /v1/t2a_v2。
-      候选 voice_id 见 config/series/{series}.yaml 的 TTS 注释，待试听后确定。
+      候选 voice_id 见 config/game/{game}.yaml 的 TTS 注释，待试听后确定。
     - MiniMax 不是 SSML：停顿用文本内 <#秒#>，语气词如 (laughs)/(breath)/(sighs)
       直接嵌入文本；emotion 放入 voice_setting.emotion，不由这些小括号标签控制。
 
@@ -396,7 +396,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
         task_id: str = "", bgm_playlist: list[str] | None = None,
         subtitle_mode: str = "overlay",
         pipeline_mode: str = "narrate") -> dict:
-    """按 edl.json 渲染成片。videos: video_id → 源视频路径（多视频任务各片段可来自不同源）。
+    """按 edl.json 渲染成片。videos: asset_id → 源视频路径（多资产任务各片段可来自不同源）。
 
     task_id 非空时：渲染成功后登记 footage_usage（以导出时 EDL 为准）
     并归档 edl.final.json 到输出目录（设计文档 §4 阶段7 单向数据流）。
@@ -450,9 +450,9 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
     seg_durations: list[float] = []   # 实测片段时长（含 TTS 冻结补齐），供字幕对齐成片时间轴
     total = 0.0
     for i, clip in enumerate(clips):
-        video = videos.get(clip["video_id"])
+        video = videos.get(clip["asset_id"])
         if video is None:
-            raise KeyError(f"EDL 片段引用未提供的 video_id: {clip['video_id']}")
+            raise KeyError(f"EDL 片段引用未提供的 asset_id: {clip['asset_id']}")
         wav = None
         if not clip.get("keep_audio"):
             wav = seg_dir / f"tts_{i:03d}.wav"

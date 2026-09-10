@@ -37,19 +37,22 @@ class TaskScopedArtifactTests(unittest.TestCase):
             root = Path(tmp)
             task_dir = root / "tasks" / "task-a"
             task_dir.mkdir(parents=True)
-            script_path = task_dir / "script.jsonl"
+            script_path = root / "g" / "1.0" / "s" / "dialog" / "s.jsonl"
+            script_path.parent.mkdir(parents=True)
             script_path.write_text('{"text":"第一句"}\n', encoding="utf-8")
             (task_dir / "task.json").write_text(json.dumps({
-                "script_path": str(script_path.relative_to(root)),
+                "quest_id": 7,
             }), encoding="utf-8")
-            videos = [{
-                "video_id": "v1",
-                "source_path": "materials/v1",
-                "script_path": str(script_path.relative_to(root)),
+            assets = [{
+                "id": 11,
+                "asset_key": "v1",
+                "kind": "video",
+                "path": "g/1.0/s/video/p001.mp4",
             }]
             words = [{"text": "第一句", "start": 0.0, "end": 1.0}]
 
-            with mock.patch("mmm.catalog.task_videos", return_value=videos), \
+            with mock.patch("mmm.catalog.task_assets", return_value=assets), \
+                    mock.patch("mmm.catalog.resolve_dialog", return_value=script_path), \
                     mock.patch("mmm.paths.DATA_ROOT", root), \
                     mock.patch.object(stage_asr, "ensure_asr", return_value=words), \
                     mock.patch.object(stage_asr, "_video_duration", return_value=10.0):
@@ -77,9 +80,9 @@ class TaskScopedArtifactTests(unittest.TestCase):
                 "fades": [],
                 "lines": [{"id": 1, "text": "task-scoped"}],
             }), encoding="utf-8")
-            videos = [{"video_id": "v1"}]
+            assets = [{"id": 11, "asset_key": "v1", "kind": "video"}]
 
-            with mock.patch("mmm.catalog.task_videos", return_value=videos), \
+            with mock.patch("mmm.catalog.task_assets", return_value=assets), \
                     mock.patch("mmm.paths.DATA_ROOT", root):
                 stats = stage_index.build_global("task-a")
 
@@ -93,7 +96,7 @@ class TaskScopedArtifactTests(unittest.TestCase):
 class SQLiteConcurrencyTests(unittest.TestCase):
     def test_init_db_enables_wal_and_busy_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "pipeline.sqlite"
+            path = Path(tmp) / "ledger.sqlite"
             conn = db.init_db(path)
             try:
                 self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")

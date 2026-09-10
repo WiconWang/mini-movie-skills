@@ -6,7 +6,7 @@ description: 长视频浓缩工作流。支持两种模式：A 模式（TTS 解�
 # mini-movie-maker
 
 设计文档：`docs/2026/0817-长视频浓缩工作流.md`（唯一事实源）
-术语表：`CONTEXT.md`　物料契约：`docs/2026/0817-物料规范.md`
+术语表：`CONTEXT.md`　物料契约：统一台账与命名规范（`game-storyline-pipeline/docs/2026/0910-统一素材台账与命名规范.md` §7）
 全项目流程图：`docs/2026/0828-全项目流程图.md`
 B 模式方案：`docs/2026/0905-B模式原声高光直拼方案.md`（v1.1.0 评审定稿）
 
@@ -18,7 +18,7 @@ B 模式：登记 → 建任务 → shots → align → vision → index → sel
                                                     （narrate/tts 全跳过，0 次 HIGH LLM）
 ```
 
-> **shots / vision 可提前于任务创建**：这两个阶段是 video 级，仅依赖 `source.mp4`（vision 还需 shots 产物），不读 task.json、不读 BGM/黑边等配置。拿到视频即可先跑，待配置确认后再 `add → task-create → index`，index 自动复用已有 `shots_meta.json`。详见「视觉预处理（可提前）」。
+> **shots / vision 可提前于任务创建**：这两个阶段是 asset 级，仅依赖视频文件（vision 还需 shots 产物），不读 task.json、不读 BGM/黑边等配置。拿到视频即可先跑，待配置确认后再 `add-asset → task-create --claim → index`，index 自动复用已有 `shots_meta.json`。详见「视觉预处理（可提前）」。
 
 > **台词定位须在 align 之后**：`mmm locate-keep` 依赖阶段2 `asr.json`，用于把「保留某句台词」的自然语言翻译成 `keep_requirements` 时间区间；目标视频未 ASR 时先 `mmm run align`。
 
@@ -30,15 +30,15 @@ B 模式：登记 → 建任务 → shots → align → vision → index → sel
 2. **不明确时 `AskUserQuestion`**：附 A/B 简述（A：LLM 解说+TTS 配音，链路重；B：原声高光直拼，无解说无配音，LOW LLM 标注挑选，0 次 HIGH 调用，成本低）
 3. **弃选默认 B**：典型路径是"先用 B 出低成本快照看底子，值得讲再补 A"
 4. **选完模式后逐段确认成片模板**（四段式，见下节）
-5. **先 A 后 B**：建两个任务共享同批视频；B 任务软链 A 的 `narration_segments`（含 line_marks），跳过 low 标注（0 LLM）直接 select-raw。先 B 后 A 同理反向（A 补跑 1 次 high 终稿）
+5. **先 A 后 B**：建两个任务认领同一 quest（`--mode narrate` 与 `--mode raw` 各一次，task_id 以 `-b` 后缀区分）；B 任务软链 A 的 `narration_segments`（含 line_marks），跳过 low 标注（0 LLM）直接 select-raw。先 B 后 A 同理反向（A 补跑 1 次 high 终稿）
 
 ```bash
-# A 模式
-mmm task-create <id> --videos ...            # pipeline_mode 缺省 narrate
-# B 模式
-mmm task-create <id> --videos ... --pipeline-mode raw
+# A 模式（task_id 无后缀）
+mmm task-create --game genshin --version 1.6 --slug midsummer-islands --mode narrate
+# B 模式（同素材，task_id 自动加 -b 后缀）
+mmm task-create --game genshin --version 1.6 --slug midsummer-islands --mode raw
 # 先A后B：B 任务复用 A 的 segments（软链，缓存指纹匹配则 0 次 LLM）
-ln -s ../hd-14-fhhj/narration_segments tasks/<b-task-id>/narration_segments
+ln -s ../genshin-1.6-midsummer-islands/narration_segments tasks/genshin-1.6-midsummer-islands-b/narration_segments
 ```
 
 ## 成片模板四段式（A/B 共用）
@@ -50,15 +50,15 @@ ln -s ../hd-14-fhhj/narration_segments tasks/<b-task-id>/narration_segments
 | 段 | 内容 | 询问要点 |
 |---|---|---|
 | Cover | intro-maker 产出的 1920×1080 JPG | 要不要封面？给路径 |
-| 片头 | 外部提供视频（intro_common/intro_special） | 用哪个片头？可选 transform 缩放/位移 |
+| 片头 | 外部提供视频（登记为 intro 资产，claim 自动引用） | 用哪个片头？可选 transform 缩放/位移 |
 | body | 解说正片（A）/ raw_insert 拼接（B） | 恒有，不询问 |
 | 片尾 | 静态图片（与 Cover 同构） | 要不要片尾？给图片路径 |
 
-据答写入 task.json `composition`（`cover`/`intro_special`/`outro` 类型；B 模式典型为 Cover + raw_insert 拼接 + 片尾，无片头）。
+据答登记为版本级资产（`mmm add-asset --kind cover/outro/intro/bgm`），`task-create --claim` 自动以 asset_id 引用写入 task.json `composition`（`cover`/`intro`/`outro` 类型；B 模式典型为 Cover + raw_insert 拼接 + 片尾，无片头）。
 
 ## 闸口协议（铁律）
 
-> **B 模式（pipeline_mode=raw）仅闸口2**：narrate/tts-plan/tts 全跳过（无解说终稿、无配音）。`select --mode raw` 完成后停在闸口2 审 storyboard.html，确认后直接 render。B 模式 EDL 全 raw_insert（纯原声），render 自动跳过 TTS 闸口。
+> **B 模式（mode=raw）仅闸口2**：narrate/tts-plan/tts 全跳过（无解说终稿、无配音）。`select --mode raw` 完成后停在闸口2 审 storyboard.html，确认后直接 render。B 模式 EDL 全 raw_insert（纯原声），render 自动跳过 TTS 闸口。
 
 1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`。dry 模式须提示"这是 LOW LLM 出的验证小样稿，精做终稿需 `--profile prod` 重跑"。**B 模式任务自动跳过此闸口**（quality 标注由 select-raw 兜底）
 2. `mmm run select` 完成后**必须停下**，通知用户审 `storyboard.html`，用户可能已手改 `edl.json`。B 模式分镜板展示每条高光段的时间/说话人/原文/quality 徽章+reason/首帧预览，支持调边界、删除、板上插入高光段
@@ -72,24 +72,24 @@ ln -s ../hd-14-fhhj/narration_segments tasks/<b-task-id>/narration_segments
 
 ## 关键约束
 
-- `materials/` 与 `assets/` 全程只读，原视频永不被修改
-- 中间产物写 `workspace/`，任务产物写 `tasks/`，成品写 `output/`
-- 一切定位用 `(video_id, 源内时间)`，禁止成片绝对时间（相对时间轴铁律）
-- 台账操作走 `pipeline.sqlite`（结构见 `db/schema.sql`）
+- 素材文件入库后只读（`add-asset` 复制进 `{game}/{version}/` 树），原视频永不被修改
+- 中间产物写 `workspace/{asset_key}/`，任务产物写 `tasks/{task_id}/`，成品写 `output/{task_id}/`，均落 `$MINIMOVIE_DATA_ROOT`
+- 一切定位用 `(asset_id, 源内时间)`，禁止成片绝对时间（相对时间轴铁律）
+- 台账走统一 `ledger.sqlite`（结构见 `db/schema.sql`）；取素材一律查台账，不翻目录
 
 ## 剪辑前配置确认（铁律：必须逐项询问）
 
-**任务创建后、开始剪辑前，Agent 必须逐项询问用户确认以下配置**（用户不直接改配置文件，全部通过自然语言答复）。用户不提供某项时用系列默认值：
+**任务创建后、开始剪辑前，Agent 必须逐项询问用户确认以下配置**（用户不直接改配置文件，全部通过自然语言答复）。用户不提供某项时用游戏默认值：
 
-| 配置项 | 含义 | 系列默认（原神） |
+| 配置项 | 含义 | 游戏默认（genshin） |
 |--------|------|-----------------|
 | 输出分辨率 / FPS | 成片规格，所有素材适配 | 1920×1080 / 30fps |
 | 黑边（letterbox） | 上下加黑边电影画幅，还是满屏 | overlay（满屏硬字幕） |
 | overlay 画面适配 | 是否放大裁 LOGO/UID（overlay 模式），scale/offset | scale 1.024 / 上移 12.96（UID 出画） |
 | 字幕模式 | overlay 硬字幕 / letterbox / none | overlay |
 | 字幕字体 | 解说字幕字体（ASS Fontname） | LXGW WenKai Medium |
-| BGM 歌单 | 背景音乐列表（task-create 扫码生成，此处确认/调序） | 空（须指定） |
-| 片头（composition） | 是否拼片头（task-create 扫码生成，此处确认） | 空（须指定） |
+| BGM 歌单 | 背景音乐列表（claim 自动引用已登记版本 BGM，此处确认/调序） | 空（须指定） |
+| 片头（composition） | 是否拼片头（claim 自动引用已登记版本 intro，此处确认） | 空（须指定） |
 | 解说模式 | dry（HIGH 融合用 LOW LLM 省钱出小样）/ prod（HIGH LLM 精做终稿） | dry |
 | TTS 模式 | dry 固定 Edge；prod 指定供应商，默认 MiniMax | dry |
 | prod TTS 供应商/模型 | 正式合成供应商与模型 | minimax / speech-2.8-hd |
@@ -111,10 +111,10 @@ ln -s ../hd-14-fhhj/narration_segments tasks/<b-task-id>/narration_segments
 
 **两种指定方式**
 - 时间区间：直接给 `start/end`（如上），写入 task.json。
-- 台词定位：用户只说台词（允许不完全准确），程序在目标视频
-  `workspace/{video_id}/asr.json` 的词级时间戳里模糊匹配
+- 台词定位：用户只说台词（允许不完全准确），程序在目标资产
+  `workspace/{asset_key}/asr.json` 的词级时间戳里模糊匹配
   （去标点/空白 → 精确子串 → 编辑距离兜底），回填
-  `{video_id, start, end}`，`note` 写用户原话。
+  `{asset_id, start, end}`，`note` 写用户原话。
 
 **时序铁律**：台词定位依赖阶段2 ASR 产物，必须在 `mmm run align`
 之后执行；目标视频尚未 ASR 时，命令提示「先跑 align」。ASR 为本地
@@ -123,8 +123,8 @@ faster-whisper，不按量计费，但需模型权重与转录耗时，故不隐
 
 ```json
 "keep_requirements": [
-  {"video_id": "gs-16-p1", "start": 300.5, "end": 320.0, "note": "第5分钟战斗原声"},
-  {"video_id": "gs-16-p1", "start": 600.0, "end": 615.0, "note": "名场面保留"}
+  {"asset_id": 1, "start": 300.5, "end": 320.0, "note": "第5分钟战斗原声"},
+  {"asset_id": 1, "start": 600.0, "end": 615.0, "note": "名场面保留"}
 ]
 ```
 
@@ -138,16 +138,16 @@ faster-whisper，不按量计费，但需模型权重与转录耗时，故不隐
 
 | 命令 | 用途 |
 |------|------|
-| `mmm db-init` | 初始化台账（迁移后第一步） |
-| `mmm add <video_id> --series <系列> [--version] [--chapter]` | 登记素材 + 台词预检 |
-| `mmm task-create <task_id> --videos a,b,c [--series] [--bgm-dir <目录>] [--intro-dir <目录>] [--pipeline-mode narrate\|raw]` | 建任务（顺序即 seq），生成 task.json。`--bgm-dir`/`--intro-dir` 扫版本目录生成 BGM 歌单与片头清单（见「BGM/片头物料化」）。`--pipeline-mode raw`（B 模式）subtitle_mode 缺省 none、写入 raw_select 配置块 |
-| `mmm run shots <video_id>` | 阶段1：镜头切分 + 黑白屏检测（仅需 source.mp4，可提前于任务创建） |
-| `mmm run align <video_id>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多视频任务全局对齐。`--task` 模式复用各视频已落盘的 `asr.json`，转录过的不重跑 |
-| `mmm locate-keep <task_id> --quote "<台词>" [--video <video_id>]` | 阶段2后：把用户台词（允许不完全准确）模糊定位到源视频本地秒，输出/写入 `keep_requirements`；未 ASR 提示先跑 `align` |
-| `mmm run vision <video_id>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5）；仅需 source.mp4 + shots 产物，可提前于任务创建 |
-| `mmm run index <video_id>` | 阶段4：多信号融合 → timeline.json |
+| `mmm db-init` | 初始化统一台账（迁移后第一步） |
+| `mmm add-asset --game <code> --version <no> --slug <quest> --kind video --seg <N> --src <文件>`（dialog/bgm/cover/outro/intro 同理） | 登记素材 + 台词预检 + sha256，落新目录树并写 ledger |
+| `mmm task-create --game <code> --version <no> --slug <quest> [--mode narrate\|raw] [--variant -v2]` | 认领 quest（video+dialog 写 task_asset，版本物料以 asset_id 引用），生成 task.json。禁止手写 task_id。`--mode raw`（B 模式）subtitle_mode 缺省 none、写入 raw_select 配置块 |
+| `mmm run shots <asset_key>` | 阶段1：镜头切分 + 黑白屏检测（仅需视频文件，可提前于任务创建） |
+| `mmm run align <asset_key>` 或 `mmm run align --task <task_id>` | 阶段2：ASR + 台词对齐；多资产任务全局对齐。`--task` 模式复用各资产已落盘的 `asr.json`，转录过的不重跑 |
+| `mmm locate-keep <task_id> --quote "<台词>" [--asset <asset_key>]` | 阶段2后：把用户台词（允许不完全准确）模糊定位到源视频本地秒，输出/写入 `keep_requirements`；未 ASR 提示先跑 `align` |
+| `mmm run vision <asset_key>` | 阶段3：抽帧 + 视觉理解（mimo-v2.5）；仅需视频文件 + shots 产物，可提前于任务创建 |
+| `mmm run index <asset_key>` | 阶段4：多信号融合 → timeline.json |
 | `mmm run narrate <task_id> [--profile dry\|prod]` | 阶段5：解说稿生成 → 闸口1。`--profile dry`（默认）HIGH 融合环节用 LOW LLM 省钱出小样；`prod` 用 HIGH LLM 精做终稿 |
-| `mmm run select <video_id> --task <task_id> [--mode narrate\|raw]` | 阶段6：选片 + 分镜板 → 闸口2（任务模式必须带 `--task`）。`--mode raw`（或 task.json pipeline_mode=raw）走 B 模式：quality+画面双维度选片，全 raw_insert EDL；无 segments 时自动跑 narrate-low-only 兜底（0 次 HIGH） |
+| `mmm run select <asset_key> --task <task_id> [--mode narrate\|raw]` | 阶段6：选片 + 分镜板 → 闸口2（任务模式必须带 `--task`）。`--mode raw`（或 task.json mode=raw）走 B 模式：quality+画面双维度选片，全 raw_insert EDL；无 segments 时自动跑 narrate-low-only 兜底（0 次 HIGH） |
 | `mmm run tts-plan --task <task_id> [--profile dry\|prod]` | 阶段6.5：按句拆分，LLM 逐句生成发音/停顿/语气/情绪标注 → 闸口3 |
 | `mmm tts-approve --task <task_id> --plan-sha256 <sha256>` | 记录用户对 TTS 表演计划的显式确认 |
 | `mmm run tts --task <task_id>` | 阶段6.6：完整合成一次，按词级时间轴切回句级 WAV，再合并回 EDL 片段 |
@@ -161,17 +161,17 @@ vision 阶段逐镜头落盘 `shots_meta/shot_XXX.json`，中断重跑只补缺�
 
 ## 视觉预处理（可提前）
 
-shots / vision 是 **video 级**阶段，输入只有 `source.mp4`（vision 额外需 `shots.json`），**不依赖** task、台词、BGM、黑边或任何剪辑配置。因此可以在 BGM / 黑边 / 片头尚未敲定时提前跑，产物落 `workspace/{video_id}/`，后续 `index` 自动复用。
+shots / vision 是 **asset 级**阶段，输入只有视频文件（vision 额外需 `shots.json`），**不依赖** task、台词、BGM、黑边或任何剪辑配置。因此可以在 BGM / 黑边 / 片头尚未敲定时提前跑，产物落 `workspace/{asset_key}/`，后续 `index` 自动复用。
 
 适用场景：拿到视频先做重活，配置确认后再建任务；夜间批量预处理多个视频。
 
 ```bash
-# 物料就绪即可（materials/{video_id}/source.mp4 存在，无需 mmm add / task-create）
-mmm run shots <video_id>     # 先切镜头 → shots.json
-mmm run vision <video_id>    # 再视觉理解 → shots_meta.json（吃 shots 产物）
+# 登记后即可（add-asset 已落盘，无需 task-create）
+mmm run shots <asset_key>     # 先切镜头 → shots.json
+mmm run vision <asset_key>    # 再视觉理解 → shots_meta.json（吃 shots 产物）
 
-# 台词也到手时，可顺带提前 ASR（单视频模式落盘 asr.json，供后续 align --task 复用，不重跑）
-mmm run align <video_id>
+# 台词也到手时，可顺带提前 ASR（单资产模式落盘 asr.json，供后续 align --task 复用，不重跑）
+mmm run align <asset_key>
 ```
 
 随后正式建任务时，`align --task` 会复用夜间落盘的 `asr.json`，`index` 会复用 `shots_meta.json`——**不要对这两个阶段加 `--force`**，否则会白白重跑夜间已完成的重活。
@@ -179,13 +179,13 @@ mmm run align <video_id>
 批量预处理（夜间挂多个视频）：
 
 ```bash
-for vid in gs-16-p1 gs-16-p2 gs-16-p3; do
-  mmm run shots  "$vid"
-  mmm run vision "$vid"
+for key in genshin-1.6-midsummer-islands-p001 genshin-1.6-midsummer-islands-p002; do
+  mmm run shots  "$key"
+  mmm run vision "$key"
 done
 ```
 
-> 注：`mmm run shots/vision` 未 `mmm add` 也能跑（产物落在 `workspace/{video_id}/`）；但后续 `align`、`select`、`render` 等需任务上下文的阶段仍要求 `mmm add` + `task-create` 完成。
+> 注：`mmm run shots/vision` 登记后（`add-asset`）即可跑（产物落在 `workspace/{asset_key}/`）；但后续 `align --task`、`select`、`render` 等需任务上下文的阶段仍要求 `task-create --claim` 完成。
 
 ## 冒烟测试入口（免台账）
 
@@ -200,23 +200,24 @@ mmm run select --path <workspace 目录>
 mmm run render --path <workspace> --video <视频> [--bgm "a.mp3;b.mp3"] [--subtitle overlay]
 ```
 
-## 系列配置（类型适配层）
+## 游戏配置（类型适配层）
 
-`config/series/{系列}.yaml` 控制分级表、命名模板、subtitle_mode、TTS 音色，以及 overlay 字幕样式与画面适配。其中：
+`config/game/{game}.yaml`（game code：genshin/zzz/starrail/wave/endfield）控制分级表、命名模板、subtitle_mode、TTS 音色，以及 overlay 字幕样式与画面适配。其中：
 
-- `subtitle`：overlay 字幕样式（`font_name`/`font_size`/`outline`/`margin_v`）+ 画面适配 `overlay_transform`（放大裁 UID）+ 底部羽化模糊遮罩 `overlay_mask`（含 `x`/`y`/`blur_sigma`/`feather_top`）。任务创建时经 `catalog.create_task` 继承到 task.json，任务/片段可覆盖。
+- `subtitle`：overlay 字幕样式（`font_name`/`font_size`/`outline`/`margin_v`）+ 画面适配 `overlay_transform`（放大裁 UID）+ 底部羽化模糊遮罩 `overlay_mask`（含 `x`/`y`/`blur_sigma`/`feather_top`）。认领时经 `catalog.claim_task` 继承到 task.json，任务/片段可覆盖。
 - `subtitle_mode`：`overlay`（默认，含底部模糊遮罩）/ `letterbox`（黑边电影画幅，未实现）。
 - 字体文件位于 `assets/fonts/`（当前仅 `LXGWWenKai-Medium.ttf`）。渲染时通过运行时临时 fontconfig（`FONTCONFIG_FILE`）命中，不注册系统字体，保证跨机器可复现。
 
-### BGM / 片头物料化（版本物料，非系列配置）
+### BGM / 片头物料化（版本物料，非游戏配置）
 
-BGM 与片头强版本相关，每版本都换，**不是系列级配置**，不写入系列 yaml。按版本目录组织物料，建任务时扫码生成清单：
+BGM 与片头强版本相关，每版本都换，**不是游戏级配置**，不写入 game yaml。登记为版本级资产，认领时自动引用：
 
-- 版本目录约定：`assets/bgm/V{版本}版本/`（音频：mp3/wav/m4a/flac）、`assets/intros/V{版本}版本/`（视频：mp4/mov/mkv）。
-- `mmm task-create` 传 `--bgm-dir <目录>` 扫该目录音频，**按文件名排序**生成 `task.json` 的 `bgm_playlist`；传 `--intro-dir <目录>` 扫视频，取**文件名排序首个**作为片头写入 `composition`。
-- 空目录 → 清单为 `[]`（BGM 走静音轨兜底、片头走无片头），不报错；目录不存在 → 报错。
-- 剪辑前配置确认时，Agent 读 task.json 已生成清单，列文件名给用户确认/调顺序；不传 `--bgm-dir` 时须在此时补扫（重跑 `task-create` 或手填 task.json）。
-- 下游 `stage_bgm` / `stage_compose` 只认文件清单，与来源无关；BGM 时长由 TTS 语音总长钉死（`render_segment` 片段时长 = `max(TTS时长, 0.5)`），不够循环、超过裁剪，无需单独配置。
+- `mmm add-asset --game <code> --version <no> --slug <quest> --kind bgm --src <音频>`（mp3/wav/m4a/flac，一版本多首各一行 asset）
+- `mmm add-asset ... --kind cover/outro --src <图片>`（1920×1080 JPG，intro-maker 成品；底图每次手动 `--bg` 指定，不入库）
+- `mmm add-asset ... --kind intro --src <视频>`（外部片头视频，只登记不生产）
+- `task-create --claim` 自动把已登记版本物料以 asset_id 写入 task.json（`bgm_playlist: [{asset_id}]`，`composition: [{type, asset_id}]`）；未登记 → 清单为空（BGM 走静音轨兜底、片头走无片头），不报错。
+- 剪辑前配置确认时，Agent 读 task.json 已生成清单，列文件名给用户确认/调顺序；缺物料时补 `add-asset` 后重跑 `task-create --claim`（幂等覆盖）。
+- 下游 `stage_bgm` / `stage_compose` 只认 asset_id 引用，与来源无关；BGM 时长由 TTS 语音总长钉死（`render_segment` 片段时长 = `max(TTS时长, 0.5)`），不够循环、超过裁剪，无需单独配置。
 
 ### TTS 适配层
 
@@ -230,7 +231,7 @@ BGM 与片头强版本相关，每版本都换，**不是系列级配置**，不
 
 ### TTS 发音词库（兜底）
 
-- 词库文件：`config/tts/{系列}.yaml`，按 `common` + `versions.{版本}` 分层
+- 词库文件：`config/tts/{game}.yaml`，按 `common` + `versions.{版本}` 分层
 - 词库只做兜底：LLM 已给出的发音规则优先，词库仅在 LLM 未识别该词时补齐
 - 拼音格式统一为带声调数字（如 `an1 bo2`），格式非法时计划生成会报错
 - 修改词库后重新执行 `mmm run tts-plan --task <task_id> --force` 才会进入新计划

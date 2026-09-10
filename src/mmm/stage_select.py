@@ -4,7 +4,7 @@
 输出 EDL（相对时间轴）和本地轻量分镜板 HTML（设计文档 §4 阶段6）。
 
 MVP 约定：
-- 单视频任务，video_id 直接取自调用参数；
+- 单视频任务，asset_key 直接取自调用参数（查台账得 asset_id）；
 - TTS 时长按中文字符估算（默认 4.5 字/秒），尚未接入真实 TTS；
 - 不考虑 raw_insert（闸口2 人工插入）；
 - footage_usage：选片时查台账排除已占用镜头，导出时（stage_render）按 EDL 登记。
@@ -35,14 +35,14 @@ def _estimate_duration(text: str, chars_per_sec: float = DEFAULT_CHARS_PER_SEC) 
 
 
 def _avoid_keep_intervals(start: float, end: float, keep_reqs: list[dict],
-                          video_id: str) -> tuple[float, float] | None:
+                          asset_id: str) -> tuple[float, float] | None:
     """解说片段避让保留区间：裁剪与 raw_insert 重叠的部分，取未被占用的较长段。
 
     保留区间不排解说句（设计文档铁律）。若片段完全被保留区间覆盖返回 None（丢弃）。
     参数为本地时间，与 keep_requirements 同基准。
     """
     for req in keep_reqs:
-        if req.get("video_id") != video_id:
+        if req.get("asset_id") != asset_id:
             continue
         rs, re = req["start"], req["end"]
         if not _overlaps(start, end, rs, re):
@@ -59,15 +59,15 @@ def _avoid_keep_intervals(start: float, end: float, keep_reqs: list[dict],
 
 
 def _shot_overlaps_keep(shot: dict, keep_reqs: list[dict],
-                        default_video_id: str = "") -> bool:
+                        default_asset_id: str = "") -> bool:
     """镜头是否与某保留区间（同视频、本地时间重叠）冲突。
 
     保留区间（raw_insert）不排解说句：解说候选镜头若落在保留区间内则剔除。
     镜头用 local_start/local_end（本地时间），与 keep_requirements 同基准。
     """
-    vid = shot.get("video_id") or default_video_id
+    vid = shot.get("asset_id") or default_asset_id
     for req in keep_reqs:
-        if req.get("video_id") != vid:
+        if req.get("asset_id") != vid:
             continue
         ls = shot.get("local_start", shot["start"])
         le = shot.get("local_end", shot["end"])
@@ -77,8 +77,8 @@ def _shot_overlaps_keep(shot: dict, keep_reqs: list[dict],
 
 
 def _collect_candidates(shots: list[dict], t0: float, t1: float,
-                        used: set[tuple[str, int]] | None = None,
-                        default_video_id: str = "",
+                        used: set[tuple[int, int]] | None = None,
+                        default_asset_id: str = "",
                         keep_reqs: list[dict] | None = None) -> tuple[list[dict], bool]:
     """收集与解说句时间区间重叠的镜头，按 E→A 排序；剔除 footage_usage 已占用镜头。
 
@@ -91,11 +91,11 @@ def _collect_candidates(shots: list[dict], t0: float, t1: float,
     cands = [s for s in cands if (s["end"] - s["start"]) >= 2.0]
     # 排除落在保留区间（raw_insert）内的镜头——保留区间不排解说句
     if keep_reqs:
-        cands = [s for s in cands if not _shot_overlaps_keep(s, keep_reqs, default_video_id)]
+        cands = [s for s in cands if not _shot_overlaps_keep(s, keep_reqs, default_asset_id)]
     exhausted = False
     if used:
         fresh = [s for s in cands
-                 if (s.get("video_id") or default_video_id, s["id"]) not in used]
+                 if (s.get("asset_id") or default_asset_id, s["id"]) not in used]
         if fresh:
             cands = fresh
         elif cands:
@@ -156,48 +156,55 @@ def _frame_paths(shot_id: int, ws: Path) -> list[str]:
             for f in sorted(frames_dir.glob("f_*.jpg"))]
 
 
-def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
-              workspace_of=None, *, used_shots: set[tuple[str, int]] | None = None,
+def build_edl(timeline: dict, narration: list[dict], default_asset_id,
+              workspace_of=None, *, used_shots: set[tuple[int, int]] | None = None,
               chars_per_sec: float = DEFAULT_CHARS_PER_SEC,
               keep_requirements: list[dict] | None = None) -> dict:
     """根据解说稿生成 EDL。
 
-    多视频全局时间轴：shot/line 自带 video_id 与 local_start/local_end，
-    EDL 片段记录 (video_id, 源内本地区间) —— 相对时间轴铁律。
-    workspace_of: video_id → 该视频的 workspace 目录（找抽帧用）。
-    keep_requirements: 人工指定的保留区间 [{video_id, start, end, note}]，
+    多视频全局时间轴：shot/line 自带 asset_id 与 local_start/local_end，
+    EDL 片段记录 (asset_id, 源内本地区间) —— 相对时间轴铁律。
+    workspace_of: asset_id → 该资产的 workspace 目录（找抽帧用）。
+    keep_requirements: 人工指定的保留区间 [{asset_id, start, end, note}]，
       生成 raw_insert 片段（原声原画）并入 EDL，区间内不排解说句；
       按源时间顺序与解说片段合流（后续内容整体后移）。
     """
     from .paths import DATA_ROOT
 
-    workspace_of = workspace_of or (lambda vid: DATA_ROOT / "workspace" / vid)
+    if workspace_of is None:
+        def workspace_of(aid) -> Path:
+            from .catalog import asset_key_of
 
-    def ws_of(vid: str) -> Path:
-        return workspace_of(vid)
+            try:
+                return DATA_ROOT / "workspace" / asset_key_of(aid)
+            except KeyError:
+                return DATA_ROOT / "workspace" / str(aid)
+
+    def ws_of(aid) -> Path:
+        return workspace_of(aid)
 
     lines = timeline.get("lines", [])
-    lines_by_key = {(l.get("video_id"), l["id"]): l for l in lines}
+    lines_by_key = {(l.get("asset_id"), l["id"]): l for l in lines}
     shots = timeline.get("shots", [])
     keep_reqs = keep_requirements or []
     clips = []
     usage = []
 
     def _resolve_line(rid):
-        """related_line_ids 解析：支持 {video_id,line_id}（多视频融合）与纯 id（单视频 oneshot）。"""
+        """related_line_ids 解析：支持 {asset_id,line_id}（多视频融合）与纯 id（单视频 oneshot）。"""
         if isinstance(rid, dict):
-            return lines_by_key.get((rid.get("video_id"), rid.get("line_id")))
+            return lines_by_key.get((rid.get("asset_id"), rid.get("line_id")))
         return next((x for x in lines if x["id"] == rid), None)
 
     # 保留区间登记占用镜头（避免解说选片重复使用）
     for req in keep_reqs:
         for s in shots:
-            if s.get("video_id") != req["video_id"]:
+            if s.get("asset_id") != req["asset_id"]:
                 continue
             ls = s.get("local_start", s["start"])
             le = s.get("local_end", s["end"])
             if _overlaps(ls, le, req["start"], req["end"]):
-                usage.append({"video_id": req["video_id"], "shot_id": s["id"]})
+                usage.append({"asset_id": req["asset_id"], "shot_id": s["id"]})
 
     for n in narration:
         related = [l for l in (_resolve_line(rid) for rid in n.get("related_line_ids", []))
@@ -211,7 +218,7 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
         target_dur = _estimate_duration(n["text"], chars_per_sec)
 
         candidates, exhausted = _collect_candidates(
-            shots, t0, t1, used_shots, default_video_id, keep_reqs)
+            shots, t0, t1, used_shots, default_asset_id, keep_reqs)
         selected, all_cands = _pick_clip(candidates, t0, t1, target_dur)
 
         if not selected:
@@ -227,7 +234,7 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
         # 解析本片段的源视频与本地时间区间（相对时间轴：EDL 不记全局秒数）
         first_shot = next((s for s in candidates if s["id"] == shot_ids[0]), None) \
             if shot_ids else None
-        vid = (first_shot or timed[0]).get("video_id") or default_video_id
+        vid = (first_shot or timed[0]).get("asset_id") or default_asset_id
         off = 0.0
         if first_shot is not None and "local_start" in first_shot:
             off = first_shot["start"] - first_shot["local_start"]   # 全局→本地 offset
@@ -251,7 +258,7 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
             "type": "narration_clip",
             "narration_id": n["id"],
             "text": n["text"],
-            "video_id": vid,
+            "asset_id": vid,
             "start": local_start,
             "end": local_end,
             "class": (main_cand or {}).get("class", "A"),
@@ -261,14 +268,14 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
             "candidates": [
                 {
                     "shot_id": c["id"],
-                    "video_id": c.get("video_id") or default_video_id,
+                    "asset_id": c.get("asset_id") or default_asset_id,
                     "class": c.get("class", "A"),
                     "start": c.get("local_start", c["start"]),
                     "end": c.get("local_end", c["end"]),
                     "description": c.get("description") or "",
                     "motion": c.get("motion") or "low",
                     "ui_type": c.get("ui_type"),
-                    "frame": (_frame_paths(c["id"], ws_of(c.get("video_id") or default_video_id)) or [""])[0],
+                    "frame": (_frame_paths(c["id"], ws_of(c.get("asset_id") or default_asset_id)) or [""])[0],
                 }
                 for c in all_cands[:5]
             ],
@@ -279,13 +286,13 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
 
         for s in selected:
             if s["shot_id"] is not None:
-                usage.append({"video_id": vid, "shot_id": s["shot_id"]})
+                usage.append({"asset_id": vid, "shot_id": s["shot_id"]})
 
     # 保留区间 → raw_insert 片段（原声原画，keep_audio=True；区间内无解说）
     raw_clips = [
         {
             "type": "raw_insert",
-            "video_id": req["video_id"],
+            "asset_id": req["asset_id"],
             "start": req["start"],
             "end": req["end"],
             "keep_audio": True,
@@ -301,33 +308,38 @@ def build_edl(timeline: dict, narration: list[dict], default_video_id: str,
 
     # 按 (视频在任务中的顺序, 源内起始) 排序——raw_insert 与解说按源时间合流，
     # 插入处后续内容整体后移由相对时间轴自动保证（渲染时按 EDL 顺序累计）
-    video_order = {v["video_id"]: i for i, v in enumerate(timeline.get("videos", []))}
-    clips.sort(key=lambda c: (video_order.get(c["video_id"], 99), c["start"]))
+    video_order = {v["asset_id"]: i for i, v in enumerate(timeline.get("videos", []))}
+    clips.sort(key=lambda c: (video_order.get(c["asset_id"], 99), c["start"]))
 
     return {
-        "video_id": default_video_id,
+        "asset_id": default_asset_id,
         "clips": clips,
         "footage_usage": usage,
         "keep_requirements": keep_reqs,
     }
 
 
-def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
+def run(work_dir: Path, asset_key: str, *, timeline_name: str = "timeline.json",
         workspace_of=None, exclude_task: str = "",
         chars_per_sec: float = DEFAULT_CHARS_PER_SEC) -> dict:
     """从目录读取 narration.json + 时间轴，产出 edl.json + storyboard.html。
 
-    单视频冒烟：work_dir=workspace/{vid}，timeline_name=timeline.json；
+    单视频冒烟：work_dir=workspace/{asset_key}，timeline_name=timeline.json；
     任务模式：work_dir=tasks/{task_id}，timeline_name=global_timeline.json。
     exclude_task：复用排除时豁免本任务（允许重跑选片不被自己的旧登记卡住）。
     """
-    from .catalog import used_shots
+    from .catalog import asset_by_key, used_shots
     from .paths import DATA_ROOT
 
     narration_path = work_dir / "narration.json"
     timeline_path = work_dir / timeline_name
     narration = json.loads(narration_path.read_text())["narration"]
     timeline = json.loads(timeline_path.read_text())
+
+    try:
+        default_asset_id = asset_by_key(asset_key)["id"]
+    except KeyError:
+        default_asset_id = asset_key  # 测试/离线场景：标签透传
 
     used = used_shots(exclude_task=exclude_task)
 
@@ -338,7 +350,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
         cfg = json.loads(cfg_path.read_text())
         keep_reqs = cfg.get("keep_requirements", [])
 
-    edl = build_edl(timeline, narration, video_id, workspace_of,
+    edl = build_edl(timeline, narration, default_asset_id, workspace_of,
                     used_shots=used, chars_per_sec=chars_per_sec,
                     keep_requirements=keep_reqs)
     (work_dir / "edl.json").write_text(
@@ -353,8 +365,8 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "timeline.json",
     tts_speed = float(tts_cfg.get("speed", 1.0))
     reviewer.build_storyboard(
         edl, storyboard_path,
-        task_id=video_id,
-        title=f"{video_id} 分镜板",
+        task_id=asset_key,
+        title=f"{asset_key} 分镜板",
         frames_base=DATA_ROOT,
         chars_per_sec=chars_per_sec,
         tts_speed=tts_speed,

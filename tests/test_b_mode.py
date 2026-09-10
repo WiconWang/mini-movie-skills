@@ -50,30 +50,30 @@ def make_timeline() -> dict:
     return {
         "task_id": "t1",
         "videos": [
-            {"video_id": "v1", "offset": 0.0, "duration": 100.0},
-            {"video_id": "v2", "offset": 100.0, "duration": 100.0},
+            {"asset_id": "v1", "offset": 0.0, "duration": 100.0},
+            {"asset_id": "v2", "offset": 100.0, "duration": 100.0},
         ],
         "lines": [
-            {"id": 1, "video_id": "v1", "speaker": "派蒙", "text": "高光台词一！",
+            {"id": 1, "asset_id": "v1", "speaker": "派蒙", "text": "高光台词一！",
              "align": "matched", "start": 10.0, "end": 13.0,
              "local_start": 10.0, "local_end": 13.0},
-            {"id": 2, "video_id": "v1", "speaker": "旅行者", "text": "过程性应答。",
+            {"id": 2, "asset_id": "v1", "speaker": "旅行者", "text": "过程性应答。",
              "align": "matched", "start": 14.0, "end": 15.0,
              "local_start": 14.0, "local_end": 15.0},
-            {"id": 3, "video_id": "v2", "speaker": "NPC", "text": "另一视频的高光。",
+            {"id": 3, "asset_id": "v2", "speaker": "NPC", "text": "另一视频的高光。",
              "align": "interpolated", "start": 110.0, "end": 113.0,
              "local_start": 10.0, "local_end": 13.0},
-            {"id": 4, "video_id": "v2", "speaker": "旁白", "text": "无时间戳台词。",
+            {"id": 4, "asset_id": "v2", "speaker": "旁白", "text": "无时间戳台词。",
              "align": "unmatched"},
         ],
         "shots": [
-            {"id": 1, "video_id": "v1", "class": "B", "ui_type": "dialogue",
+            {"id": 1, "asset_id": "v1", "class": "B", "ui_type": "dialogue",
              "start": 9.0, "end": 16.0, "local_start": 9.0, "local_end": 16.0,
              "line_ids": [1, 2]},
-            {"id": 2, "video_id": "v1", "class": "A", "ui_type": "none",
+            {"id": 2, "asset_id": "v1", "class": "A", "ui_type": "none",
              "start": 16.0, "end": 20.0, "local_start": 16.0, "local_end": 20.0,
              "line_ids": []},
-            {"id": 3, "video_id": "v2", "class": "C", "ui_type": "none",
+            {"id": 3, "asset_id": "v2", "class": "C", "ui_type": "none",
              "start": 109.0, "end": 114.0, "local_start": 9.0, "local_end": 14.0,
              "line_ids": [3, 4]},
         ],
@@ -85,7 +85,7 @@ def make_segments(timeline: dict) -> list[dict]:
     """构造含 line_marks 的 v2 segments（模拟 narrate_low 产出）。"""
     return [
         {
-            "video_id": "v1", "chunk_id": "chunk_001", "segment_id": "v1::chunk_001",
+            "asset_id": "v1", "chunk_id": "chunk_001", "segment_id": "v1::chunk_001",
             "beats": [{
                 "id": 1, "summary": "高光节拍", "characters": ["派蒙"],
                 "cause": "", "effect": "",
@@ -99,7 +99,7 @@ def make_segments(timeline: dict) -> list[dict]:
             }],
         },
         {
-            "video_id": "v2", "chunk_id": "chunk_001", "segment_id": "v2::chunk_001",
+            "asset_id": "v2", "chunk_id": "chunk_001", "segment_id": "v2::chunk_001",
             "beats": [{
                 "id": 1, "summary": "节拍二", "characters": ["NPC"],
                 "cause": "", "effect": "", "key_quotes": [],
@@ -116,8 +116,8 @@ def make_segments(timeline: dict) -> list[dict]:
 
 def _plan_for(timeline: dict) -> stage_narrate.SegmentPlan:
     return stage_narrate.SegmentPlan(
-        video_id="v1", chunk_id="chunk_001", segment_id="v1::chunk_001",
-        timeline={"video_id": "v1", "lines": timeline["lines"],
+        asset_id="v1", chunk_id="chunk_001", segment_id="v1::chunk_001",
+        timeline={"asset_id": "v1", "lines": timeline["lines"],
                   "shots": timeline["shots"]},
         prompt="",
     )
@@ -128,7 +128,7 @@ class LineMarksValidationTests(unittest.TestCase):
 
     def _data(self, marks, refs=None):
         return {
-            "video_id": "v1", "chunk_id": "chunk_001", "segment_id": "v1::chunk_001",
+            "asset_id": "v1", "chunk_id": "chunk_001", "segment_id": "v1::chunk_001",
             "beats": [{
                 "id": 1, "summary": "s", "characters": [], "cause": "", "effect": "",
                 "key_quotes": [],
@@ -181,7 +181,7 @@ class RunLowOnlyTests(unittest.TestCase):
         # 按 segment 的台词表返回首个 line_id（v1 → line 1；v2 → line 3）
         first_line = 1 if vid == "v1" else 3
         data = {
-            "video_id": vid,
+            "asset_id": vid,
             "chunk_id": "chunk_001", "segment_id": seg_id,
             "beats": [{
                 "id": 1, "summary": "s", "characters": [], "cause": "", "effect": "",
@@ -325,7 +325,7 @@ class SelectRawTests(unittest.TestCase):
         timeline = make_timeline()
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = self._prepare(tmp, timeline, make_segments(timeline))
-            keep = [{"video_id": "v1", "start": 10.5, "end": 12.0, "note": "人工"}]
+            keep = [{"asset_id": "v1", "start": 10.5, "end": 12.0, "note": "人工"}]
             self._run(out_dir, keep_requirements=keep)
             edl = json.loads((out_dir / "edl.json").read_text(encoding="utf-8"))
             by_quality = {c.get("quality") for c in edl["clips"]}
@@ -425,7 +425,7 @@ class RenderSkipTtsTests(unittest.TestCase):
             work_dir = Path(tmp)
             video = Path(tmp) / "src.mp4"
             video.write_bytes(b"x")
-            clips = [{"type": "raw_insert", "video_id": "v1",
+            clips = [{"type": "raw_insert", "asset_id": "v1",
                       "start": 0.0, "end": 1.0, "keep_audio": True, "shot_ids": []}]
             (work_dir / "edl.json").write_text(
                 json.dumps({"clips": clips}, ensure_ascii=False), encoding="utf-8")

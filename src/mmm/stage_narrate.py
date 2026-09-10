@@ -73,7 +73,7 @@ HIGH_PROMPT_FP = hashlib.sha256(
 
 @dataclass
 class SegmentPlan:
-    video_id: str
+    asset_id: str
     chunk_id: str
     segment_id: str
     timeline: dict
@@ -83,7 +83,7 @@ class SegmentPlan:
 
     def timeline_fingerprint(self) -> str:
         payload = {
-            "video_id": self.video_id,
+            "asset_id": self.asset_id,
             "chunk_id": self.chunk_id,
             "lines": self.timeline.get("lines", []),
             "shots": self.timeline.get("shots", []),
@@ -262,12 +262,12 @@ def _build_high_fuse_prompt(segments: list[dict], target_minutes: float, notes: 
 def _split_per_video(timeline: dict) -> dict[str, dict]:
     result: dict[str, dict] = {}
     for line in timeline.get("lines", []):
-        video_id = line.get("video_id") or timeline.get("video_id") or ""
-        result.setdefault(video_id, {"video_id": video_id, "lines": [], "shots": []})["lines"].append(line)
+        asset_id = line.get("asset_id") or timeline.get("asset_id") or ""
+        result.setdefault(asset_id, {"asset_id": asset_id, "lines": [], "shots": []})["lines"].append(line)
     for shot in timeline.get("shots", []):
-        video_id = shot.get("video_id") or timeline.get("video_id") or ""
-        if video_id in result:
-            result[video_id]["shots"].append(shot)
+        asset_id = shot.get("asset_id") or timeline.get("asset_id") or ""
+        if asset_id in result:
+            result[asset_id]["shots"].append(shot)
     return result
 
 
@@ -288,7 +288,7 @@ def _scene_paragraphs(lines: list[dict]) -> list[list[dict]]:
     return paragraphs or [[]]
 
 
-def _segment_for_lines(video_id: str, chunk_id: str, lines: list[dict], shots: list[dict]) -> SegmentPlan:
+def _segment_for_lines(asset_id: str, chunk_id: str, lines: list[dict], shots: list[dict]) -> SegmentPlan:
     starts = [line["start"] for line in lines if line.get("start") is not None]
     ends = [line["end"] for line in lines if line.get("start") is not None]
     if starts:
@@ -299,11 +299,11 @@ def _segment_for_lines(video_id: str, chunk_id: str, lines: list[dict], shots: l
         ]
     else:
         selected = shots
-    timeline = {"video_id": video_id, "lines": lines, "shots": selected}
-    segment_id = f"{video_id}::{chunk_id}"
+    timeline = {"asset_id": asset_id, "lines": lines, "shots": selected}
+    segment_id = f"{asset_id}::{chunk_id}"
     prompt = _build_low_prompt(timeline)
     return SegmentPlan(
-        video_id=video_id,
+        asset_id=asset_id,
         chunk_id=chunk_id,
         segment_id=segment_id,
         timeline=timeline,
@@ -311,7 +311,7 @@ def _segment_for_lines(video_id: str, chunk_id: str, lines: list[dict], shots: l
     )
 
 
-def _split_video_by_context(video_id: str, timeline: dict, available_tokens: int) -> list[SegmentPlan]:
+def _split_video_by_context(asset_id: str, timeline: dict, available_tokens: int) -> list[SegmentPlan]:
     lines = _usable_lines(timeline)
     shots = timeline.get("shots", [])
     paragraphs = _scene_paragraphs(lines)
@@ -319,7 +319,7 @@ def _split_video_by_context(video_id: str, timeline: dict, available_tokens: int
     for paragraph in paragraphs:
         if groups:
             candidate = groups[-1] + paragraph
-            probe = _segment_for_lines(video_id, "probe", candidate, shots)
+            probe = _segment_for_lines(asset_id, "probe", candidate, shots)
             if estimate_tokens(_build_low_prompt(probe.timeline)) <= available_tokens:
                 groups[-1] = candidate
                 continue
@@ -330,7 +330,7 @@ def _split_video_by_context(video_id: str, timeline: dict, available_tokens: int
     def append_fitting(group: list[dict]) -> None:
         if not group:
             return
-        probe = _segment_for_lines(video_id, "probe", group, shots)
+        probe = _segment_for_lines(asset_id, "probe", group, shots)
         if estimate_tokens(probe.prompt) <= available_tokens or len(group) == 1:
             overflow_groups.append(group)
             return
@@ -342,7 +342,7 @@ def _split_video_by_context(video_id: str, timeline: dict, available_tokens: int
         append_fitting(group)
 
     return [
-        _segment_for_lines(video_id, f"chunk_{index:03d}", group, shots)
+        _segment_for_lines(asset_id, f"chunk_{index:03d}", group, shots)
         for index, group in enumerate(overflow_groups, start=1)
     ]
 
@@ -356,9 +356,9 @@ def _build_segments(
     low_endpoint: LLMEndpoint,
 ) -> list[SegmentPlan]:
     segments: list[SegmentPlan] = []
-    for video_id, video_timeline in _split_per_video(timeline).items():
+    for asset_id, video_timeline in _split_per_video(timeline).items():
         segments.extend(
-            _split_video_by_context(video_id, video_timeline, _context_available(low_endpoint))
+            _split_video_by_context(asset_id, video_timeline, _context_available(low_endpoint))
         )
     return segments
 
@@ -491,7 +491,7 @@ def _normalize_line_marks(marks, related_ids: list[int], beat_id) -> list[dict]:
 
 def _validate_low_segment(data: dict, plan: SegmentPlan) -> dict:
     required = {
-        "video_id": plan.video_id,
+        "asset_id": plan.asset_id,
         "chunk_id": plan.chunk_id,
         "segment_id": plan.segment_id,
     }
@@ -609,7 +609,7 @@ def _run_low(plan: SegmentPlan, endpoint: LLMEndpoint, output_dir: Path) -> dict
     )
     data = {
         **data,
-        "video_id": plan.video_id,
+        "asset_id": plan.asset_id,
         "chunk_id": plan.chunk_id,
         "segment_id": plan.segment_id,
     }
@@ -656,13 +656,13 @@ def _remap_beat_refs(narration: list[dict], segments: list[dict]) -> list[dict]:
                 continue
             seen_refs.add(key)
             for line_id in beat_index[key]:
-                refs.append({"video_id": key[0].split("::", 1)[0], "line_id": line_id})
+                refs.append({"asset_id": key[0].split("::", 1)[0], "line_id": line_id})
         if not refs:
             raise ValueError(f"解说句 {sentence_id} 映射后 related_line_ids 为空")
         deduped: list[dict] = []
         seen_lines: set[tuple[str, int]] = set()
         for ref in refs:
-            key = (ref["video_id"], ref["line_id"])
+            key = (ref["asset_id"], ref["line_id"])
             if key not in seen_lines:
                 seen_lines.add(key)
                 deduped.append(ref)
@@ -676,16 +676,16 @@ def _remap_beat_refs(narration: list[dict], segments: list[dict]) -> list[dict]:
 
 def _normalize_direct_refs(narration: list[dict], timeline: dict) -> list[dict]:
     default_video = (
-        (timeline.get("videos") or [{}])[0].get("video_id")
-        or timeline.get("video_id")
-        or (timeline.get("lines") or [{}])[0].get("video_id")
+        (timeline.get("videos") or [{}])[0].get("asset_id")
+        or timeline.get("asset_id")
+        or (timeline.get("lines") or [{}])[0].get("asset_id")
         or ""
     )
     return [{
         "id": sentence["id"],
         "text": sentence["text"],
         "related_line_ids": [
-            {"video_id": ref if isinstance(ref, dict) else default_video,
+            {"asset_id": ref if isinstance(ref, dict) else default_video,
              "line_id": ref.get("line_id") if isinstance(ref, dict) else ref}
             for ref in sentence.get("related_line_ids", [])
         ],
@@ -694,7 +694,7 @@ def _normalize_direct_refs(narration: list[dict], timeline: dict) -> list[dict]:
 
 def _to_markdown(narration: list[dict], timeline: dict) -> str:
     lines_by_key = {
-        (line.get("video_id"), line["id"]): line
+        (line.get("asset_id"), line["id"]): line
         for line in timeline.get("lines", [])
     }
     md = [
@@ -707,8 +707,8 @@ def _to_markdown(narration: list[dict], timeline: dict) -> str:
         times = []
         quoted = []
         for ref in sentence.get("related_line_ids", []):
-            line = lines_by_key.get((ref.get("video_id"), ref.get("line_id")))
-            label = f"{ref.get('video_id')}:{ref.get('line_id')}"
+            line = lines_by_key.get((ref.get("asset_id"), ref.get("line_id")))
+            label = f"{ref.get('asset_id')}:{ref.get('line_id')}"
             if line and line.get("start") is not None:
                 times.append((line["start"], line["end"]))
                 quoted.append(f"- [{label}] {line.get('speaker') or '？'}：{line.get('text')}")
@@ -833,7 +833,7 @@ def _high_reuse(
     if not isinstance(narration, list) or not narration:
         return False, "终稿 narration 为空", None
     line_keys = {
-        (line.get("video_id"), line.get("id"))
+        (line.get("asset_id"), line.get("id"))
         for line in timeline.get("lines", [])
         if line.get("align") != "unvoiced"
     }
@@ -842,7 +842,7 @@ def _high_reuse(
         if not isinstance(refs, list) or not refs:
             return False, "终稿存在空引用", None
         for ref in refs:
-            if not isinstance(ref, dict) or (ref.get("video_id"), ref.get("line_id")) not in line_keys:
+            if not isinstance(ref, dict) or (ref.get("asset_id"), ref.get("line_id")) not in line_keys:
                 return False, "终稿存在未知或无效引用", None
     return True, "元数据全部匹配", data
 

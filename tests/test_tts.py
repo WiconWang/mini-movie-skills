@@ -97,10 +97,10 @@ class LlmBoundaryTests(unittest.TestCase):
 
 
 class GlossaryTests(unittest.TestCase):
-    def test_series_glossary_loaded_with_common_and_version_terms(self):
+    def test_game_glossary_loaded_with_common_and_version_terms(self):
         from mmm.tts.glossary import load_series_pronunciations
 
-        rules = load_series_pronunciations("原神", "1.4")
+        rules = load_series_pronunciations("genshin", "1.4")
         by_term = {rule.term: rule for rule in rules}
         self.assertEqual(by_term["安柏"].pinyin, "an1 bo2")
         self.assertEqual(by_term["蒙德"].pinyin, "meng2 de2")

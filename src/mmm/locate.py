@@ -1,7 +1,7 @@
 """素材台词定位器：把用户台词（允许不完全准确）在 asr.json 词级时间轴里模糊匹配成源视频本地秒区间。
 
-依赖阶段2 ASR 产物 asr.json（workspace/{video_id}/asr.json，任务模式回退
-tasks/{task_id}/workspace/{video_id}/asr.json）。输出区间与 keep_requirements 同基准
+依赖阶段2 ASR 产物 asr.json（workspace/{asset_key}/asr.json，任务模式回退
+tasks/{task_id}/workspace/{asset_key}/asr.json）。输出区间与 keep_requirements 同基准
 （源视频本地秒）。纯函数无网络，便于单元测试。
 """
 
@@ -43,13 +43,13 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[n]
 
 
-def asr_path(video_id: str, task_id: str = "") -> Path | None:
+def asr_path(asset_key: str, task_id: str = "") -> Path | None:
     """返回可用的 asr.json；共享 workspace 优先，任务级兜底。"""
-    shared = DATA_ROOT / "workspace" / video_id / "asr.json"
+    shared = DATA_ROOT / "workspace" / asset_key / "asr.json"
     if shared.exists():
         return shared
     if task_id:
-        task = DATA_ROOT / "tasks" / task_id / "workspace" / video_id / "asr.json"
+        task = DATA_ROOT / "tasks" / task_id / "workspace" / asset_key / "asr.json"
         if task.exists():
             return task
     return None

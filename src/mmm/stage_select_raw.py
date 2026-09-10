@@ -95,7 +95,7 @@ def _make_pick(line: dict, video_dur: float, quality: str, reason: str,
     if end - start < 0.3:
         return None
     return {
-        "video_id": line["video_id"],
+        "asset_id": line["asset_id"],
         "start": round(start, 3),
         "end": round(end, 3),
         "line_id": line["id"],
@@ -109,18 +109,18 @@ def _make_pick(line: dict, video_dur: float, quality: str, reason: str,
 def _dedup_and_sort(picks: list[dict]) -> list[dict]:
     """同 line_id 去重（保留 quality 高的），按 start 排序。
 
-    line_id=None 的（keep_requirements 人工区间）按 (video_id, start) 作 key，
+    line_id=None 的（keep_requirements 人工区间）按 (asset_id, start) 作 key，
     不会与自动挑选互撞，也不互相覆盖。
     """
     rank = {"great": 3, "good": 2, "skip": 1}
     best: dict[tuple, dict] = {}
     for p in picks:
         lid = p["line_id"]
-        key = ("noid", p["video_id"], p["start"]) if lid is None else lid
+        key = ("noid", p["asset_id"], p["start"]) if lid is None else lid
         prev = best.get(key)
         if prev is None or rank.get(p["quality"], 0) > rank.get(prev["quality"], 0):
             best[key] = p
-    return sorted(best.values(), key=lambda p: (p["video_id"], p["start"]))
+    return sorted(best.values(), key=lambda p: (p["asset_id"], p["start"]))
 
 
 def _merge_keep_requirements(picks: list[dict],
@@ -133,15 +133,15 @@ def _merge_keep_requirements(picks: list[dict],
     extra: list[dict] = []
     for req in keep_reqs:
         rs, re = float(req["start"]), float(req["end"])
-        vid = req["video_id"]
+        vid = req["asset_id"]
         # 剔除与人工区间重叠的自动 pick（该台词区间已由人工区间覆盖）
         picks = [
             p for p in picks
-            if p["video_id"] != vid
+            if p["asset_id"] != vid
             or not _overlaps(p["start"], p["end"], rs, re)
         ]
         extra.append({
-            "video_id": vid,
+            "asset_id": vid,
             "start": round(rs, 3),
             "end": round(re, 3),
             "line_id": None,
@@ -154,7 +154,7 @@ def _merge_keep_requirements(picks: list[dict],
 
 
 def build_raw_edl(timeline: dict, picks: list[dict],
-                  video_order: dict[str, int],
+                  asset_order: dict[str, int],
                   workspace_of) -> dict:
     """构造全 raw_insert EDL（与 stage_select.build_edl 输出结构对齐）。
 
@@ -170,7 +170,7 @@ def build_raw_edl(timeline: dict, picks: list[dict],
         shot = line_to_shot.get(lid, {}) if lid is not None else {}
         clip = {
             "type": "raw_insert",
-            "video_id": p["video_id"],
+            "asset_id": p["asset_id"],
             "start": p["start"],
             "end": p["end"],
             "keep_audio": True,
@@ -181,15 +181,15 @@ def build_raw_edl(timeline: dict, picks: list[dict],
             "reason": p["reason"],
             "class": shot.get("class", "A"),
             "shot_ids": [],   # B 模式豁免 footage_usage
-            "frames": _frame_paths(shot["id"], workspace_of(p["video_id"]))
+            "frames": _frame_paths(shot["id"], workspace_of(p["asset_id"]))
                 if shot and "id" in shot else [],
             "candidates": [],
         }
         clips.append(clip)
 
-    clips.sort(key=lambda c: (video_order.get(c["video_id"], 99), c["start"]))
+    clips.sort(key=lambda c: (asset_order.get(c["asset_id"], 99), c["start"]))
     return {
-        "video_id": (timeline.get("videos") or [{}])[0].get("video_id", ""),
+        "asset_id": (timeline.get("videos") or [{}])[0].get("asset_id", ""),
         "clips": clips,
         "footage_usage": [],   # B 模式豁免
         "keep_requirements": [],
@@ -200,7 +200,7 @@ def ensure_segments(segments_dir: Path, timeline_path: Path,
                     work_dir: Path, auto_low_extract: bool) -> dict:
     """确保 segments 覆盖 timeline 全部视频且含 v2 line_marks；缺失时兜底跑 low-only。
 
-    - 以 timeline 涉及的 video_id 集合为基准校验覆盖度（不仅看现有文件是否合法）：
+    - 以 timeline 涉及的 asset_id 集合为基准校验覆盖度（不仅看现有文件是否合法）：
       第一次运行中途失败会留下部分落盘段，仅校验"现有文件合法"会漏掉未跑的视频
     - 指纹/段级校验交给 run_low_only 内部的 _read_valid_cache：指纹匹配的段命中
       缓存跳过，不匹配的重跑（旧 v1 segments 缺 line_marks 由此自动升级到 v2）
@@ -220,35 +220,35 @@ def ensure_segments(segments_dir: Path, timeline_path: Path,
 
 
 def _segments_complete(segments_dir: Path, timeline_path: Path) -> bool:
-    """timeline 涉及的每个 video_id 是否都有含 line_marks 的 segment 文件。
+    """timeline 涉及的每个 asset_id 是否都有含 line_marks 的 segment 文件。
 
-    完整性以 video 覆盖度为基准（timeline 的 videos + lines 所属视频）；
+    完整性以资产覆盖度为基准（timeline 的 videos + lines 所属资产）；
     不重新推导 chunk 切分（那需要 endpoint 配置，测试/离线场景拿不到），
     段级与指纹级校验由 run_low_only 逐段处理。
     """
     if not segments_dir.exists() or not any(segments_dir.glob("*.json")):
         return False
     timeline = json.loads(Path(timeline_path).read_text(encoding="utf-8"))
-    needed = {v["video_id"] for v in timeline.get("videos", [])
-              if v.get("video_id")}
-    if not needed:   # 单视频 timeline（无 videos 块）退化为首行 video_id
+    needed = {v["asset_id"] for v in timeline.get("videos", [])
+              if v.get("asset_id") is not None}
+    if not needed:   # 单视频 timeline（无 videos 块）退化为首行 asset_id
         lines = timeline.get("lines", [])
-        if lines and lines[0].get("video_id"):
-            needed = {lines[0]["video_id"]}
-    covered: set[str] = set()
+        if lines and lines[0].get("asset_id") is not None:
+            needed = {lines[0]["asset_id"]}
+    covered: set = set()
     for f in segments_dir.glob("*.json"):
         try:
             seg = json.loads(f.read_text(encoding="utf-8"))
         except Exception:
             continue
         beats = seg.get("beats", [])
-        vid = seg.get("video_id", "")
-        if vid and beats and all(b.get("line_marks") for b in beats):
-            covered.add(vid)
+        aid = seg.get("asset_id")
+        if aid is not None and beats and all(b.get("line_marks") for b in beats):
+            covered.add(aid)
     return needed.issubset(covered)
 
 
-def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.json",
+def run(work_dir: Path, asset_key: str, *, timeline_name: str = "global_timeline.json",
         quality_levels: list[str] | None = None,
         buffer_sec: float = 0.0,
         min_shot_class: str = "B",
@@ -280,7 +280,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.
     # 3. 画面维度 + 时间戳过滤
     lines_by_id = {l["id"]: l for l in timeline.get("lines", [])}
     line_to_shot = _build_shot_index(timeline.get("shots", []))
-    video_durs = {v["video_id"]: v["duration"] for v in timeline.get("videos", [])}
+    asset_durs = {v["asset_id"]: v["duration"] for v in timeline.get("videos", [])}
     min_rank = CLASS_RANK.get(min_shot_class, CLASS_RANK["B"])
 
     picks: list[dict] = []
@@ -299,7 +299,7 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.
         if CLASS_RANK.get(cls, CLASS_RANK["A"]) > min_rank:
             skipped_class += 1
             continue
-        pick = _make_pick(line, video_durs.get(line["video_id"], 1e9),
+        pick = _make_pick(line, asset_durs.get(line["asset_id"], 1e9),
                           info["quality"], info["reason"], buffer_sec)
         if pick:
             picks.append(pick)
@@ -307,14 +307,19 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.
     # 4. 合并人工 keep_requirements + 去重 + 排序
     if keep_requirements:
         picks = _merge_keep_requirements(picks, keep_requirements)
-    video_order = {v["video_id"]: i for i, v in enumerate(timeline.get("videos", []))}
+    asset_order = {v["asset_id"]: i for i, v in enumerate(timeline.get("videos", []))}
     picks = _dedup_and_sort(picks)
 
     # 5. 构造全 raw_insert EDL
-    def ws_of(vid: str) -> Path:
-        return DATA_ROOT / "workspace" / vid
+    def ws_of(aid) -> Path:
+        from .catalog import asset_key_of
 
-    edl = build_raw_edl(timeline, picks, video_order, ws_of)
+        try:
+            return DATA_ROOT / "workspace" / asset_key_of(aid)
+        except KeyError:
+            return DATA_ROOT / "workspace" / str(aid)
+
+    edl = build_raw_edl(timeline, picks, asset_order, ws_of)
     (work_dir / "edl.json").write_text(
         json.dumps(edl, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -322,8 +327,8 @@ def run(work_dir: Path, video_id: str, *, timeline_name: str = "global_timeline.
     storyboard_path = work_dir / "storyboard.html"
     reviewer.build_storyboard(
         edl, storyboard_path,
-        task_id=video_id,
-        title=f"{video_id} 原声高光分镜板",
+        task_id=asset_key,
+        title=f"{asset_key} 原声高光分镜板",
         frames_base=DATA_ROOT,
         chars_per_sec=4.5,
         tts_speed=1.0,
