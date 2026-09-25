@@ -8,9 +8,25 @@ small 档 4.7 倍但幻觉严重，已淘汰。
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+from .paths import CODE_ROOT
+
 ASR_MODEL_SIZE = "medium"    # 实测定型：medium+VAD 25倍实时无幻觉；small 4.7倍但幻觉严重
+# 本地权重目录：存在则直接加载，不走 HF hub 下载（离线/镜像环境必需）。
+# 覆盖：环境变量 MMM_ASR_MODEL_DIR
+ASR_MODEL_DIR_DEFAULT = CODE_ROOT / "temp" / "models" / "faster-whisper-medium"
+
+
+def _resolve_model(model_size: str) -> str:
+    """本地权重存在则返回目录路径，否则回退 HF 模型名（走 hub 下载）。"""
+    if model_size != ASR_MODEL_SIZE:
+        return model_size
+    d = Path(os.environ.get("MMM_ASR_MODEL_DIR") or ASR_MODEL_DIR_DEFAULT)
+    if (d / "model.bin").is_file():
+        return str(d)
+    return model_size
 
 
 def transcribe_words(video: Path, model_size: str = ASR_MODEL_SIZE) -> list[dict]:
@@ -20,7 +36,7 @@ def transcribe_words(video: Path, model_size: str = ASR_MODEL_SIZE) -> list[dict
     """
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    model = WhisperModel(_resolve_model(model_size), device="cpu", compute_type="int8")
     segments, _ = model.transcribe(str(video), language="zh", word_timestamps=True,
                                    condition_on_previous_text=False, vad_filter=True)
     words = []
