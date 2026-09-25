@@ -61,6 +61,9 @@ ln -s ../genshin-1.6-midsummer-islands/narration_segments tasks/genshin-1.6-mids
 > **B 模式（mode=raw）仅闸口2**：narrate/tts-plan/tts 全跳过（无解说终稿、无配音）。`select --mode raw` 完成后停在闸口2 审 storyboard.html，确认后直接 render。B 模式 EDL 全 raw_insert（纯原声），render 自动跳过 TTS 闸口。
 
 1. `mmm run narrate` 完成后**必须停下**，通知用户审 `tasks/{task_id}/narration.md`，不得擅自执行 `select`。dry 模式须提示"这是 LOW LLM 出的验证小样稿，精做终稿需 `--profile prod` 重跑"。**B 模式任务自动跳过此闸口**（quality 标注由 select-raw 兜底）
+   - **闸口1 的修改回路（md 是源，json 是派生）**：用户直接改 `narration.md`（人类可读），改完**主动告知**后执行 `mmm narrate-sync --task <task_id>` 回写 `narration.json`。**不做自动检测触发**——只有用户说"我改了"或"继续"时才执行。
+   - **也支持口述修改**：用户说「句13 那句不合适，改成 ……」时，Agent 先改 `narration.md` 对应正文，再跑 `narrate-sync` 回流。**不要直接改 json**——那会让两侧不一致。
+   - `narrate-sync` 会校验句号集合与正文非空（不符即报错，不静默写入），成功后把 json 标记为人工编辑稿（`_human_edited: true`）——**此后重跑 `narrate` 必须显式 `--force` 才能覆盖**，否则工件受保护。md 侧的「时间区间」「引用台词」是由 json 派生的只读信息，修改它们不会回流。
 2. `mmm run select` 完成后**必须停下**，通知用户审 `storyboard.html`，用户可能已手改 `edl.json`。B 模式分镜板展示每条高光段的时间/说话人/原文/quality 徽章+reason/首帧预览，支持调边界、删除、板上插入高光段
 3. `mmm run tts-plan` 完成后**必须停下**，通知用户审 `tasks/{task_id}/tts_plan.html`
 4. 闸口3 必须逐句核对术语发音、停顿、语气、情绪；TTS 计划按句号/问号/感叹号/分号拆成句级标注，一个 EDL 解说片段会拆成多行；LLM 只能标注表演意图，**不得修改解说稿文本**
@@ -148,6 +151,7 @@ faster-whisper，不按量计费，但需模型权重与转录耗时，故不隐
 | `mmm run index <asset_key>` | 阶段4：多信号融合 → timeline.json |
 | `mmm run narrate <task_id> [--profile dry\|prod]` | 阶段5：解说稿生成 → 闸口1。`--profile dry`（默认）HIGH 融合环节用 LOW LLM 省钱出小样；`prod` 用 HIGH LLM 精做终稿 |
 | `mmm run select <asset_key> --task <task_id> [--mode narrate\|raw]` | 阶段6：选片 + 分镜板 → 闸口2（任务模式必须带 `--task`）。`--mode raw`（或 task.json mode=raw）走 B 模式：quality+画面双维度选片，全 raw_insert EDL；无 segments 时自动跑 narrate-low-only 兜底（0 次 HIGH） |
+| `mmm narrate-sync --task <task_id>` | 闸口1：把人工编辑过的 `narration.md` 回写 `narration.json`（用户主动告知后执行；并标记人工编辑稿防覆盖） |
 | `mmm run tts-plan --task <task_id> [--profile dry\|prod]` | 阶段6.5：按句拆分，LLM 逐句生成发音/停顿/语气/情绪标注 → 闸口3 |
 | `mmm tts-approve --task <task_id> --plan-sha256 <sha256>` | 记录用户对 TTS 表演计划的显式确认 |
 | `mmm run tts --task <task_id>` | 阶段6.6：完整合成一次，按词级时间轴切回句级 WAV，再合并回 EDL 片段 |

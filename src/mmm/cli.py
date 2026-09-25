@@ -458,6 +458,34 @@ def run_narrate(
     typer.echo("  ⏸ 闸口1：请审阅 narration.md，确认后再继续阶段6")
 
 
+@app.command("narrate-sync")
+def narrate_sync(
+    task_id: str = typer.Argument(..., help="任务 id"),
+) -> None:
+    """把人工编辑过的 narration.md 同步回 narration.json（闸口1 人工修正）。
+
+    仅在用户主动告知「已修改解说稿」或口述修改内容后执行——不做自动检测触发。
+    成功后 narration.json 标记为人工编辑稿，重跑 narrate 需显式 --force 才能覆盖。
+    """
+    from . import stage_narrate
+
+    task_dir = db.DATA_ROOT / "tasks" / task_id
+    try:
+        report = stage_narrate.sync_from_markdown(task_dir)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1)
+
+    if report["updated"]:
+        typer.echo(f"✓ 已同步 {len(report['updated'])} 句修改：{report['updated']}")
+    else:
+        typer.echo("✓ md 与 json 内容一致，无改动")
+    typer.echo("  narration.json 已标记为人工编辑稿（重跑 narrate 需 --force）")
+    if report["rerendered"]:
+        typer.echo("  narration.md 已按 json 重新渲染")
+    typer.echo(f"  下一步: mmm run select --task {task_id}")
+
+
 @run_app.command("select")
 @_pipeline_locked(lambda asset_key="", task="", path="", **_: [
     f"task:{task}"] if task else (

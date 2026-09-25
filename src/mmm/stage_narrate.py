@@ -655,8 +655,15 @@ def _remap_beat_refs(narration: list[dict], segments: list[dict]) -> list[dict]:
             if key in seen_refs:
                 continue
             seen_refs.add(key)
+            asset_id_raw = key[0].split("::", 1)[0]
+            # 规范要求持久化引用一律用整数 asset_id；segment_id 切出的是字符串，
+            # 不转回 int 会让下游按 (asset_id, line_id) 查 timeline 时全部落空。
+            try:
+                asset_id: object = int(asset_id_raw)
+            except (TypeError, ValueError):
+                asset_id = asset_id_raw
             for line_id in beat_index[key]:
-                refs.append({"asset_id": key[0].split("::", 1)[0], "line_id": line_id})
+                refs.append({"asset_id": asset_id, "line_id": line_id})
         if not refs:
             raise ValueError(f"解说句 {sentence_id} 映射后 related_line_ids 为空")
         deduped: list[dict] = []
@@ -707,8 +714,16 @@ def _to_markdown(narration: list[dict], timeline: dict) -> str:
         times = []
         quoted = []
         for ref in sentence.get("related_line_ids", []):
-            line = lines_by_key.get((ref.get("asset_id"), ref.get("line_id")))
-            label = f"{ref.get('asset_id')}:{ref.get('line_id')}"
+            line_id = ref.get("line_id")
+            # asset_id 可能被上游写成字符串（见 _remap_beat_refs），而 timeline 里是 int；
+            # 不归一化会导致查不到 → 引用台词与时间区间双双空白，闸口1 失去审阅依据。
+            line = lines_by_key.get((ref.get("asset_id"), line_id))
+            if line is None:
+                try:
+                    line = lines_by_key.get((int(ref.get("asset_id")), line_id))
+                except (TypeError, ValueError):
+                    pass
+            label = f"{ref.get('asset_id')}:{line_id}"
             if line and line.get("start") is not None:
                 times.append((line["start"], line["end"]))
                 quoted.append(f"- [{label}] {line.get('speaker') or '？'}：{line.get('text')}")
@@ -718,6 +733,97 @@ def _to_markdown(narration: list[dict], timeline: dict) -> str:
         md.extend(quoted)
         md.append("")
     return "\n".join(md)
+
+
+_MD_SENTENCE_RE = re.compile(r"^##\s*句\s*(\d+)\s*$")
+
+
+def parse_narration_markdown(text: str) -> dict[int, str]:
+    """解析闸口1 的 narration.md，返回 {句 id: 正文}。
+
+    只取「## 句N」到「**时间区间**」/「**引用台词**」之间的非空行作为正文；
+    时间区间与引用台词是由 json 派生的只读信息，不参与回写。
+    """
+    out: dict[int, str] = {}
+    current: int | None = None
+    collecting = False
+    buf: list[str] = []
+
+    def flush() -> None:
+        if current is not None:
+            out[current] = "".join(buf).strip()
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        m = _MD_SENTENCE_RE.match(line)
+        if m:
+            flush()
+            current = int(m.group(1))
+            buf = []
+            collecting = True
+            continue
+        if current is None or not collecting:
+            continue
+        # 只读信息及其后的引用列表，遇到即停止收集正文
+        if (line.startswith("**时间区间**") or line.startswith("**引用台词**")
+                or line.startswith("- [")):
+            collecting = False
+            continue
+        if line:
+            buf.append(line)
+    flush()
+    return out
+
+
+def sync_from_markdown(task_dir: Path) -> dict:
+    """把人工编辑过的 narration.md 反向同步回 narration.json（闸口1 人工修正）。
+
+    校验句号集合与正文非空，任一不符即报错，不静默写入。
+    成功后置 _human_edited=True（重跑 narrate 需显式 --force 才能覆盖），
+    并按 json 重新渲染 md，保证两侧格式一致。
+    """
+    md_path = task_dir / "narration.md"
+    json_path = task_dir / "narration.json"
+    if not md_path.exists():
+        raise FileNotFoundError(f"未找到 {md_path}")
+    if not json_path.exists():
+        raise FileNotFoundError(f"未找到 {json_path}")
+
+    parsed = parse_narration_markdown(md_path.read_text(encoding="utf-8"))
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    narration = data.get("narration") or []
+    if not narration:
+        raise ValueError("narration.json 中没有解说句")
+
+    json_ids = {s["id"] for s in narration}
+    md_ids = set(parsed)
+    if json_ids != md_ids:
+        missing = sorted(json_ids - md_ids)
+        extra = sorted(md_ids - json_ids)
+        raise ValueError(
+            f"md 与 json 的句号集合不一致（json {len(json_ids)} 句 / md {len(md_ids)} 句）"
+            + (f"；md 缺少 {missing}" if missing else "")
+            + (f"；md 多出 {extra}" if extra else "")
+        )
+    empty = sorted(i for i in md_ids if not parsed[i])
+    if empty:
+        raise ValueError(f"以下句的正文为空，拒绝同步：{empty}")
+
+    updated = [s["id"] for s in narration if parsed[s["id"]] != s["text"]]
+    for sentence in narration:
+        sentence["text"] = parsed[sentence["id"]]
+    data["_human_edited"] = True
+    json_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    timeline_path = task_dir / "global_timeline.json"
+    rerendered = False
+    if timeline_path.exists():
+        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+        md_path.write_text(_to_markdown(narration, timeline), encoding="utf-8")
+        rerendered = True
+
+    return {"total": len(narration), "updated": updated, "rerendered": rerendered}
 
 
 def _evidence_fingerprint(segments: list[dict]) -> str:
@@ -1013,165 +1119,179 @@ def run(timeline_path: Path, output_dir: Path, *, target_minutes: float = 15.0,
     if not force and _human_edited_final(output_dir):
         raise RuntimeError("narration.json 标记为人工编辑稿，覆盖前必须显式使用 --force")
 
+    # 旧终稿先"暂存改名"而非直接销毁：后续 _high_reuse 同样读不到它（语义等价），
+    # 但生成失败时能把旧稿原样放回，不会让一次 LLM 失败连带丢掉人工改过的稿子。
+    stale_finals: list[tuple[Path, Path]] = []
     if not plan.high_cache_reusable:
         for filename in ("narration.json", "narration.md"):
             path = output_dir / filename
             if path.exists():
-                path.unlink()
+                stash = output_dir / (filename + ".stale")
+                path.replace(stash)
+                stale_finals.append((stash, path))
 
-    if plan.mode == "oneshot":
-        reusable, _, existing = _high_reuse(
-            output_dir, timeline, target_minutes, plan.high_endpoint,
-            None, None, force, notes,
-        )
-        if reusable and existing:
-            narration = existing["narration"]
-        else:
-            data, raw = _chat_json(
-                plan.high_endpoint,
-                plan.high_prompt or "",
-                max_tokens=plan.high_endpoint.profile.max_tokens,
-                temperature=plan.high_endpoint.profile.temperature,
-                label=f"oneshot:{output_dir.name}",
-                output_dir=output_dir,
+    try:
+        if plan.mode == "oneshot":
+            reusable, _, existing = _high_reuse(
+                output_dir, timeline, target_minutes, plan.high_endpoint,
+                None, None, force, notes,
             )
-            try:
-                narration = _validate_high_output(
-                    data,
-                    valid_beats=False,
-                    direct_ids=_timeline_line_ids(timeline),
-                    beat_index=None,
+            if reusable and existing:
+                narration = existing["narration"]
+            else:
+                data, raw = _chat_json(
+                    plan.high_endpoint,
+                    plan.high_prompt or "",
+                    max_tokens=plan.high_endpoint.profile.max_tokens,
+                    temperature=plan.high_endpoint.profile.temperature,
+                    label=f"oneshot:{output_dir.name}",
+                    output_dir=output_dir,
                 )
-            except Exception as exc:
-                path = _save_raw_failure(
-                    output_dir, "narrate_high", f"oneshot:{output_dir.name}", raw
-                )
-                raise RuntimeError(
-                    f"HIGH oneshot 输出防伪校验失败: {exc}；失败响应: {path}"
-                ) from exc
-            narration = _normalize_direct_refs(narration, timeline)
-        models = {"narrate_low": None, "narrate_high": {
-            "profile": plan.high_endpoint.profile_id,
-            "model": plan.high_endpoint.model,
-        }}
-        prompt_fingerprints = {"narrate_low": None, "narrate_high": HIGH_PROMPT_FP}
-        evidence_fp = ""
-        used_mode = "oneshot"
-        segments: list[dict] = []
-    else:
-        assert plan.low_endpoint is not None
-        planned_names = {
-            segment.cache_path.name for segment in plan.segments if segment.cache_path
-        }
-        _clean_stale_segments(output_dir, planned_names)
-        for segment in plan.segments:
-            _drop_invalid_cache(segment, plan.low_endpoint)
-
-        segment_results: dict[str, dict] = {}
-        workers = plan.low_endpoint.profile.narration_segment_workers
-
-        def load_or_run(segment: SegmentPlan) -> dict:
-            cached = _read_valid_cache(segment, plan.low_endpoint)  # type: ignore[arg-type]
-            if cached is not None:
-                segment.cache_hit = True
-                return cached
-            return _run_low(segment, plan.low_endpoint, output_dir)  # type: ignore[arg-type]
-
-        if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(load_or_run, segment): segment.segment_id
-                    for segment in plan.segments
-                }
-                for future in as_completed(futures):
-                    segment_id = futures[future]
-                    segment_results[segment_id] = future.result()
-        else:
-            for segment in plan.segments:
-                segment_results[segment.segment_id] = load_or_run(segment)
-
-        ordered_segments = [
-            segment_results[segment.segment_id] for segment in plan.segments
-        ]
-        beat_index = {
-            (segment["segment_id"], beat["id"]): beat
-            for segment in ordered_segments for beat in segment.get("beats", [])
-        }
-        fuse_prompt = _build_high_fuse_prompt(ordered_segments, target_minutes, notes)
-        reusable, _, existing = _high_reuse(
-            output_dir,
-            timeline,
-            target_minutes,
-            plan.high_endpoint,
-            plan.segments,
-            plan.low_endpoint,
-            force,
-            notes,
-        )
-        if reusable and existing:
-            narration = existing["narration"]
-        else:
-            data, raw = _chat_json(
-                plan.high_endpoint,
-                fuse_prompt,
-                max_tokens=plan.high_endpoint.profile.max_tokens,
-                temperature=plan.high_endpoint.profile.temperature,
-                label=f"fuse:{output_dir.name}",
-                output_dir=output_dir,
-            )
-            try:
-                high_output = _validate_high_output(
-                    data,
-                    valid_beats=True,
-                    direct_ids=set(),
-                    beat_index=beat_index,
-                )
-            except Exception as exc:
-                path = _save_raw_failure(
-                    output_dir, "narrate_high", f"fuse:{output_dir.name}", raw
-                )
-                raise RuntimeError(
-                    f"HIGH 融合输出防伪校验失败: {exc}；失败响应: {path}"
-                ) from exc
-            narration = _remap_beat_refs(high_output, ordered_segments)
-        models = {
-            "narrate_low": {
-                "profile": plan.low_endpoint.profile_id,
-                "model": plan.low_endpoint.model,
-            },
-            "narrate_high": {
+                try:
+                    narration = _validate_high_output(
+                        data,
+                        valid_beats=False,
+                        direct_ids=_timeline_line_ids(timeline),
+                        beat_index=None,
+                    )
+                except Exception as exc:
+                    path = _save_raw_failure(
+                        output_dir, "narrate_high", f"oneshot:{output_dir.name}", raw
+                    )
+                    raise RuntimeError(
+                        f"HIGH oneshot 输出防伪校验失败: {exc}；失败响应: {path}"
+                    ) from exc
+                narration = _normalize_direct_refs(narration, timeline)
+            models = {"narrate_low": None, "narrate_high": {
                 "profile": plan.high_endpoint.profile_id,
                 "model": plan.high_endpoint.model,
-            },
-        }
-        prompt_fingerprints = {
-            "narrate_low": LOW_PROMPT_FP,
-            "narrate_high": HIGH_PROMPT_FP,
-        }
-        evidence_fp = _evidence_fingerprint(ordered_segments)
-        used_mode = "segment"
-        segments = ordered_segments
+            }}
+            prompt_fingerprints = {"narrate_low": None, "narrate_high": HIGH_PROMPT_FP}
+            evidence_fp = ""
+            used_mode = "oneshot"
+            segments: list[dict] = []
+        else:
+            assert plan.low_endpoint is not None
+            planned_names = {
+                segment.cache_path.name for segment in plan.segments if segment.cache_path
+            }
+            _clean_stale_segments(output_dir, planned_names)
+            for segment in plan.segments:
+                _drop_invalid_cache(segment, plan.low_endpoint)
 
-    result = {
-        "mode": used_mode,
-        "target_minutes": target_minutes,
-        "narration_notes": notes,
-        "routes": ["narrate_high"] if used_mode == "oneshot" else ["narrate_low", "narrate_high"],
-        "prompt_fingerprints": prompt_fingerprints,
-        "timeline_fingerprint": _timeline_fingerprint(timeline),
-        "evidence_fingerprint": evidence_fp,
-        "_human_edited": False,
-        "models": models,
-        "narration": narration,
-    }
-    if segments:
-        result["segment_order"] = [segment["segment_id"] for segment in segments]
-    (output_dir / "narration.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (output_dir / "narration.md").write_text(
-        _to_markdown(narration, timeline), encoding="utf-8"
-    )
+            segment_results: dict[str, dict] = {}
+            workers = plan.low_endpoint.profile.narration_segment_workers
+
+            def load_or_run(segment: SegmentPlan) -> dict:
+                cached = _read_valid_cache(segment, plan.low_endpoint)  # type: ignore[arg-type]
+                if cached is not None:
+                    segment.cache_hit = True
+                    return cached
+                return _run_low(segment, plan.low_endpoint, output_dir)  # type: ignore[arg-type]
+
+            if workers > 1:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {
+                        executor.submit(load_or_run, segment): segment.segment_id
+                        for segment in plan.segments
+                    }
+                    for future in as_completed(futures):
+                        segment_id = futures[future]
+                        segment_results[segment_id] = future.result()
+            else:
+                for segment in plan.segments:
+                    segment_results[segment.segment_id] = load_or_run(segment)
+
+            ordered_segments = [
+                segment_results[segment.segment_id] for segment in plan.segments
+            ]
+            beat_index = {
+                (segment["segment_id"], beat["id"]): beat
+                for segment in ordered_segments for beat in segment.get("beats", [])
+            }
+            fuse_prompt = _build_high_fuse_prompt(ordered_segments, target_minutes, notes)
+            reusable, _, existing = _high_reuse(
+                output_dir,
+                timeline,
+                target_minutes,
+                plan.high_endpoint,
+                plan.segments,
+                plan.low_endpoint,
+                force,
+                notes,
+            )
+            if reusable and existing:
+                narration = existing["narration"]
+            else:
+                data, raw = _chat_json(
+                    plan.high_endpoint,
+                    fuse_prompt,
+                    max_tokens=plan.high_endpoint.profile.max_tokens,
+                    temperature=plan.high_endpoint.profile.temperature,
+                    label=f"fuse:{output_dir.name}",
+                    output_dir=output_dir,
+                )
+                try:
+                    high_output = _validate_high_output(
+                        data,
+                        valid_beats=True,
+                        direct_ids=set(),
+                        beat_index=beat_index,
+                    )
+                except Exception as exc:
+                    path = _save_raw_failure(
+                        output_dir, "narrate_high", f"fuse:{output_dir.name}", raw
+                    )
+                    raise RuntimeError(
+                        f"HIGH 融合输出防伪校验失败: {exc}；失败响应: {path}"
+                    ) from exc
+                narration = _remap_beat_refs(high_output, ordered_segments)
+            models = {
+                "narrate_low": {
+                    "profile": plan.low_endpoint.profile_id,
+                    "model": plan.low_endpoint.model,
+                },
+                "narrate_high": {
+                    "profile": plan.high_endpoint.profile_id,
+                    "model": plan.high_endpoint.model,
+                },
+            }
+            prompt_fingerprints = {
+                "narrate_low": LOW_PROMPT_FP,
+                "narrate_high": HIGH_PROMPT_FP,
+            }
+            evidence_fp = _evidence_fingerprint(ordered_segments)
+            used_mode = "segment"
+            segments = ordered_segments
+
+        result = {
+            "mode": used_mode,
+            "target_minutes": target_minutes,
+            "narration_notes": notes,
+            "routes": ["narrate_high"] if used_mode == "oneshot" else ["narrate_low", "narrate_high"],
+            "prompt_fingerprints": prompt_fingerprints,
+            "timeline_fingerprint": _timeline_fingerprint(timeline),
+            "evidence_fingerprint": evidence_fp,
+            "_human_edited": False,
+            "models": models,
+            "narration": narration,
+        }
+        if segments:
+            result["segment_order"] = [segment["segment_id"] for segment in segments]
+        (output_dir / "narration.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (output_dir / "narration.md").write_text(
+            _to_markdown(narration, timeline), encoding="utf-8"
+        )
+    except BaseException:
+        # 生成失败：把暂存的旧稿放回原位，避免"一次 LLM 失败 = 人工改过的稿子丢失"
+        for _stash, _orig in stale_finals:
+            if _stash.exists() and not _orig.exists():
+                _stash.replace(_orig)
+        raise
+    for _stash, _ in stale_finals:
+        _stash.unlink(missing_ok=True)
     return {
         "sentences": len(narration),
         "mode": used_mode,
