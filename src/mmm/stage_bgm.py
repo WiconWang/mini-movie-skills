@@ -28,9 +28,29 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"BGM 命令失败: {' '.join(cmd[:6])}...\n{r.stderr.decode()[-800:]}")
 
 
+def _merge_intervals(regions, eps: float = 1e-6) -> list[tuple[float, float]]:
+    """合并重叠/相邻区间，压缩 volume 的 enable 表达式。
+
+    B 模式下每条 EDL 片段都是一个 raw_insert，在成片时间轴上首尾相接。
+    不合并会生成数百个 between() 条件：120 片段 → 240 条件 → 6518 字符滤镜串，
+    ffmpeg 报 `Error initializing filters` / `Cannot allocate memory` 直接失败。
+    合并后语义完全等价（同样的时刻压低同样的 dB），条件数骤降到个位数。
+    """
+    if not regions:
+        return []
+    rs = sorted((float(s), float(e)) for s, e in regions if e > s)
+    merged = [list(rs[0])]
+    for s, e in rs[1:]:
+        if s <= merged[-1][1] + eps:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return [(s, e) for s, e in merged]
+
+
 def _normalize(bgm: Path, out: Path) -> None:
     """统一采样率/声道，避免 concat 因参数不一致失败。"""
-    _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(bgm),
+    _run([ffmpeg_bin(), "-y", "-v", "error", "-i", str(bgm),
           "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS), "-af", "loudnorm=I=-16:TP=-1.5",
           str(out)])
 
@@ -61,7 +81,7 @@ def build_bgm_track(
     if not files:
         # 无 BGM 配置：输出静音轨
         out_path = out_path or (DATA_ROOT / "workspace" / "_bgm_silence.wav")
-        _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "lavfi", "-i",
+        _run([ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
               f"anullsrc=r={SAMPLE_RATE}:cl=stereo", "-t", str(total_duration),
               "-ac", str(CHANNELS), str(out_path)])
         return out_path
@@ -83,7 +103,7 @@ def build_bgm_track(
             concat_list.write_text(
                 "".join(f"file '{norm}'\n" for _ in range(loops)))
             looped_wav = tmpdir / f"looped_{i}.wav"
-            _run([ffmpeg_bin(), "-y", "-v", "quiet", "-f", "concat", "-safe", "0",
+            _run([ffmpeg_bin(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
                   "-i", str(concat_list), "-t", str(total_duration),
                   "-c", "copy", str(looped_wav)])
             looped.append(looped_wav)
@@ -98,7 +118,7 @@ def build_bgm_track(
             for nxt in looped[1:]:
                 out_mix = tmpdir / f"mix_{id(nxt)}.wav"
                 _run([
-                    ffmpeg_bin(), "-y", "-v", "quiet",
+                    ffmpeg_bin(), "-y", "-v", "error",
                     "-i", str(mixed), "-i", str(nxt),
                     "-filter_complex",
                     f"[0:a]atrim=end={seg_dur}[a0];"
@@ -110,6 +130,10 @@ def build_bgm_track(
                 mixed = out_mix
 
         # 3. ducking：解说段 / raw_insert 段音量压低，末尾接结尾淡出
+        #    先合并重叠/相邻区间 —— B 模式片段在成片轴上首尾相接，
+        #    不合并会生成数百个 between() 条件，撑爆 ffmpeg 滤镜图
+        narration_regions = _merge_intervals(narration_regions)
+        raw_insert_regions = _merge_intervals(raw_insert_regions)
         duck_expr_parts = []
         for s, e in narration_regions:
             duck_expr_parts.append(f"between(t,{s:.3f},{e:.3f})")
@@ -141,12 +165,12 @@ def build_bgm_track(
             volume_filter += f",{outro_fade}"
 
             out_path = out_path or (DATA_ROOT / "workspace" / "_bgm_ducked.wav")
-            _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
+            _run([ffmpeg_bin(), "-y", "-v", "error", "-i", str(mixed),
                   "-af", volume_filter, "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS),
                   "-t", str(total_duration), str(out_path)])
         else:
             out_path = out_path or (DATA_ROOT / "workspace" / "_bgm.wav")
-            _run([ffmpeg_bin(), "-y", "-v", "quiet", "-i", str(mixed),
+            _run([ffmpeg_bin(), "-y", "-v", "error", "-i", str(mixed),
                   "-af", outro_fade, "-ar", str(SAMPLE_RATE), "-ac", str(CHANNELS),
                   "-t", str(total_duration), str(out_path)])
 
