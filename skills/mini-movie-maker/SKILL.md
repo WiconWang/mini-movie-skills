@@ -80,6 +80,8 @@ ln -s ../genshin-1.6-midsummer-islands/narration_segments tasks/genshin-1.6-mids
 - 一切定位用 `(asset_id, 源内时间)`，禁止成片绝对时间（相对时间轴铁律）
 - 台账走统一 `ledger.sqlite`（结构见 `db/schema.sql`）；取素材一律查台账，不翻目录
 
+**跑长阶段、换素材、或遇阶段失败前，先读 [`references/troubleshooting.md`](references/troubleshooting.md)** —— 10 条实战规则（长任务必须脱会话运行、ASR 强制离线、`global_timeline.json` 是缓存、覆盖率即素材完整性判据、BGM duck 区间合并等），照着做能省掉整轮返工。
+
 ## 剪辑前配置确认（铁律：必须逐项询问）
 
 **任务创建后、开始剪辑前，Agent 必须逐项询问用户确认以下配置**（用户不直接改配置文件，全部通过自然语言答复）。用户不提供某项时用游戏默认值：
