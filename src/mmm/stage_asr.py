@@ -29,16 +29,25 @@ def _resolve_model(model_size: str) -> str:
     return model_size
 
 
-def transcribe_words(video: Path, model_size: str = ASR_MODEL_SIZE) -> list[dict]:
+def transcribe_words(video: Path, model_size: str = ASR_MODEL_SIZE,
+                     initial_prompt: str | None = None) -> list[dict]:
     """视频 → 词级时间戳列表 [{text, start, end}]。
 
     实测定型配方：vad_filter 过滤音乐/静音，condition_on_previous_text=False 防幻觉连锁。
+
+    initial_prompt：注入本段剧情的专名表（人物名/术语）。实测中文游戏实录里
+    专有名词最容易被听错（翠珏岩→脆绝盐、烟绯→晏飞），一旦错字，字符级对齐整段崩掉、
+    覆盖率暴跌。注入专名可把错误拉回正确写法。未显式传入时读环境变量
+    MMM_ASR_INITIAL_PROMPT。
     """
     from faster_whisper import WhisperModel
 
+    prompt = initial_prompt or os.environ.get("MMM_ASR_INITIAL_PROMPT") or None
     model = WhisperModel(_resolve_model(model_size), device="cpu", compute_type="int8")
+    extra = {"initial_prompt": prompt} if prompt else {}
     segments, _ = model.transcribe(str(video), language="zh", word_timestamps=True,
-                                   condition_on_previous_text=False, vad_filter=True)
+                                   condition_on_previous_text=False, vad_filter=True,
+                                   **extra)
     words = []
     for seg in segments:
         for w in seg.words or []:
