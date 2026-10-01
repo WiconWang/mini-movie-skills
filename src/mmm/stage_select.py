@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import reviewer
 
-CLASS_RANK = {"E": 0, "D": 1, "C": 2, "B": 3, "A": 4}
+CLASS_RANK = {"E": 0, "D": 1, "C": 2, "B": 3, "A": 4, "X": 5}
 DEFAULT_CHARS_PER_SEC = 4.5
 
 
