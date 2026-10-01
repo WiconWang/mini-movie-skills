@@ -262,7 +262,9 @@ BGM 与片头强版本相关，每版本都换，**不是游戏级配置**，不
 改动后用官方探针验证，三条都要过：
 
 ```bash
-<CODE_ROOT>/.venv/bin/python <CODE_ROOT>/tools/verify_llm_env.py {low|high|vision} --yes
+# 解释器：用运行 mmm 的同一个（激活 venv 后即 python3；或用 MMM_PYTHON 指定）
+"${MMM_PYTHON:-python3}" <CODE_ROOT>/tools/verify_llm_env.py {low|high|vision} --yes
+# venv 全路径写法：POSIX 为 <CODE_ROOT>/.venv/bin/python；Windows 为 <CODE_ROOT>\.venv\Scripts\python.exe
 ```
 
 > 探针只发文本、`prompt_tokens≈35`，**不验证真图**。要验 vision 真图像能力，得用
