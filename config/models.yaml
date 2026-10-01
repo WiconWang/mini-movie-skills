@@ -34,6 +34,7 @@ profiles:
     retry_backoff_seconds: 5
     capabilities:
       - text
+      - image
     # DeepSeek V4.1 默认思考模式；显式固化以避免默认变更漂移。
     # 注意：思考模式下 temperature 被服务端忽略（不报错）。
     request_extra:
@@ -83,6 +84,6 @@ routes:
     defaults:
       max_tokens: 16384
       temperature: 0.2
-      max_retries: 0
+      max_retries: 1
       retryable_status_codes: []
       retry_network_errors: false

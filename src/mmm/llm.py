@@ -260,6 +260,9 @@ def chat(endpoint: LLMEndpoint, messages: list[dict], *, max_tokens: int,
             if not content.strip():
                 error_type = "EmptyContent"
                 error_message = "模型返回空内容"
+                # 思考模式偶发只输出 reasoning、content 为空且 finish_reason=stop。
+                # 这属于可重试的服务端抖动，必须显式置位，否则 max_retries 形同虚设。
+                retryable = True
         except urllib.error.HTTPError as e:
             http_status = e.code
             error_type = "HTTPError"
