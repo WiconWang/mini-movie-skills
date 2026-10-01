@@ -96,7 +96,7 @@ ln -s ../genshin-1.6-midsummer-islands/narration_segments tasks/genshin-1.6-mids
 | 解说模式 | dry（HIGH 融合用 LOW LLM 省钱出小样）/ prod（HIGH LLM 精做终稿） | dry |
 | TTS 模式 | dry 固定 Edge；prod 指定供应商，默认 MiniMax | dry |
 | prod TTS 供应商/模型 | 正式合成供应商与模型 | minimax / speech-2.8-hd |
-| prod 音色 | 必须是账户侧确认可用的 voice_id | 空（必须显式配置） |
+| prod 音色 | 必须是账户侧确认可用的 voice_id | 取 `config/game/{game}.yaml` 的 `tts.prod.voice_id`（genshin 已配 `Chinese_playful_streamer_nv1`）|
 | TTS 语速 | dry 与 prod 的基础语速 | 1.1 / 1.0 |
 | 目标时长 | 正片分钟数（不含 raw_insert） | 15 |
 | 保留区间 | raw_insert 原声段（见下节） | 空 |
@@ -223,6 +223,52 @@ BGM 与片头强版本相关，每版本都换，**不是游戏级配置**，不
 - 剪辑前配置确认时，Agent 读 task.json 已生成清单，列文件名给用户确认/调顺序；缺物料时补 `add-asset` 后重跑 `task-create --claim`（幂等覆盖）。
 - 下游 `stage_bgm` / `stage_compose` 只认 asset_id 引用，与来源无关；BGM 时长由 TTS 语音总长钉死（`render_segment` 片段时长 = `max(TTS时长, 0.5)`），不够循环、超过裁剪，无需单独配置。
 
+### LLM 路由配置
+
+三条路由，全部配在 **`<CODE_ROOT>/.env`**（`CODE_ROOT` 即项目根，`llm.py` 硬编码读它）：
+
+| 路由 | 用途 | 变量前缀 |
+|------|------|----------|
+| `narrate_low` | 一级节拍抽取、B 模式标注 | `MMM_NARRATE_LOW_` |
+| `narrate_high` | 终稿融合 | `MMM_NARRATE_HIGH_` |
+| `vision` | 阶段3 单帧理解 | `MMM_VISION_` |
+| `tts_plan` | TTS 表演计划（可选，缺省回退 `narrate_low`）| `MMM_TTS_PLAN_` |
+
+每条路由 4 个变量：`PROFILE` / `MODEL` / `BASE_URL` / `API_KEY`。
+
+两条硬规则：
+
+- **`PROFILE` 必须先在 `config/models.yaml` 的 `profiles:` 里定义**，否则报错；
+  `vision` 路由还会校验 `capabilities` 必须含 **`image`**（`models.py` `route_profile()`），
+  否则 `RuntimeError: vision route 使用的 profile 必须声明 image capability`
+- **加载用 `os.environ.setdefault`** → shell 环境变量优先于 `.env`（与数据根相反）
+
+**DeepSeek 模型名与能力（实测 2026-10-01）**：
+
+- `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 是旧名，映射到 **`DeepSeek-V4.1-Flash`**
+  （官方新名 `deepseek-flash`）；`deepseek-v4-pro` 映射到 **`DeepSeek-V4-Pro-0813`**
+- **flash 与 pro 是两个独立模型**（实证：同一 prompt 下返回体 `model` 字段分别为
+  `deepseek-flash` / `deepseek-v4-pro`，`system_fingerprint` 不同，`prompt_tokens` 47 vs 100）
+- ⚠️ 官方价格页脚注称 pro「计划下线、请求将路由到 Flash」，但**线上未生效** ——
+  **不要据此认定二者等价，一律以实际返回的 `model` 字段为准**
+- **图像理解只有 flash 支持，pro 不支持**：给 pro 发图不报错，但图片被静默丢弃 →
+  `prompt_tokens` 只剩文本、回复「我无法查看图片」。所以 `vision` 路由只能用 flash 系
+- 定价（百万 tokens，空闲时段 = 高峰半价；高峰 = 周一至周五 9:00-12:00、14:00-18:00）：
+  flash 输入未命中 1 元 / 输出 4 元；pro 输入未命中 4.5 元 / 输出 13.5 元 → 批量跑避开高峰
+- 思考模式：`{"thinking":{"type":"enabled|disabled"}}` + `{"reasoning_effort":"low|high|max"}`（默认 enabled/high）。
+  **偶发返回空 `content`**（`finish_reason='stop'`，completion 全被 reasoning 占满），
+  实测 36 次中 1 次（≈3%），**与 thinking 开关无关**；`max_retries=0` 的路由遇到会直接失败
+
+改动后用官方探针验证，三条都要过：
+
+```bash
+<CODE_ROOT>/.venv/bin/python <CODE_ROOT>/tools/verify_llm_env.py {low|high|vision} --yes
+```
+
+> 探针只发文本、`prompt_tokens≈35`，**不验证真图**。要验 vision 真图像能力，得用
+> `mmm.llm.chat_with_image(load_endpoint("vision"), <提示>, <真实帧.jpg>, max_tokens=400)`
+> —— 传图成功的判据是 `prompt_tokens` 明显大于纯文本（实测真实帧 ≈370）。
+
 ### TTS 适配层
 
 - dry 固定 `provider: edge`，走 `full_then_split`
@@ -231,6 +277,33 @@ BGM 与片头强版本相关，每版本都换，**不是游戏级配置**，不
 - TTS 计划按句拆分：句号/问号/感叹号/分号等作为句子边界，逐句标注停顿、语气、情绪、发音
 - LLM 只输出 provider 无关的表演计划；Edge 不支持的能力在闸口报告中明确显示降级
 - MiniMax API Key 放 `.env` 的 `MMM_MINIMAX_TTS_API_KEY`
+- **MiniMax 账户必须有余额**，否则 `t2a_v2` 直接返回 `status_code 1008 insufficient balance` ——
+  此时 key / 音色 / 参数全对也合成不了，属账户问题不是配置问题（`get_voice` 是免费接口，能通不代表能合成）
+- 多把 key 时逐个试：`get_voice` 免费，但**只有真实合成才能验出余额**，用 3 字文本（≈0.002 元）探
+- 列可用音色（免费、不合成）：`POST https://api.minimaxi.com/v1/get_voice`，body `{"voice_type":"system"}`，
+  Header `Authorization: Bearer <key>`；返回 `system_voice[]`，取 `voice_id` 填进 prod 配置的 `voice_id`
+- ⚠️ **列表查不到 ≠ 不可用**：`get_voice` 返回的系统音色**不含隐藏音色**。
+  genshin 在用的 `Chinese_playful_streamer_nv1` 就不在任何列表里（`system_voice` 303 条、`voice_cloning` 0 条都查不到），
+  但**直接合成成功**。判定音色是否可用**只能靠真实合成调用**，不要用列表查询下结论
+
+**最小成本端到端验证**（改 key / 换音色后必做，12 字约 0.008 元）：
+
+```python
+import sys, pathlib
+sys.path.insert(0, "<CODE_ROOT>/src")
+from mmm.tts.types import TtsPerformance, TtsProfile, TtsSegment
+from mmm.tts.providers.minimax import MiniMaxTTSProvider
+
+p = MiniMaxTTSProvider()
+prof = TtsProfile(mode="prod", provider="minimax", model="speech-2.8-hd",
+                  voice="female-yujie", speed=1.0)
+segs = [TtsSegment(index=0, narration_id=1, source_text="翠石砌玉壶，故事开始了。",
+                   performance=TtsPerformance())]
+print(p.estimate_cost(segs, prof))            # 先看钱
+raw = p.synthesize(segs, prof, pathlib.Path("/tmp/tts_probe"))
+print(raw.audio_path, len(raw.timings))       # 词时间戳数量应等于字数
+```
+
 - 如需独立 TTS 计划模型，配置 `MMM_TTS_PLAN_PROFILE/MODEL/BASE_URL/API_KEY`；未配置时运行时回退 `narrate_low`
 
 ### TTS 发音词库（兜底）
