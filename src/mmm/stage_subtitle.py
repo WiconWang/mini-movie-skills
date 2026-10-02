@@ -26,7 +26,7 @@ DEFAULT_SUBTITLE_CFG = {
     "font_name": "Noto Sans CJK SC",
     "font_size": 42,
     "outline": 2.5,
-    "margin_v": 40,
+    "margin_v": 95,
     "play_res": [1280, 720],
     "max_chars_per_screen": MAX_CHARS_PER_SCREEN,
 }
