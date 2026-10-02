@@ -74,7 +74,7 @@ routes:
 
   vision:
     defaults:
-      max_tokens: 1500
+      max_tokens: 4000
       temperature: null
       max_retries: 1
       retryable_status_codes: [429, 500, 502, 503]
@@ -82,7 +82,7 @@ routes:
 
   tts_plan:
     defaults:
-      max_tokens: 16384
+      max_tokens: 65536
       temperature: 0.2
       max_retries: 1
       retryable_status_codes: []

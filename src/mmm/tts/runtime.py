@@ -470,7 +470,10 @@ def create_tts_plan(work_dir: Path, tts_cfg: dict, *, profile: str | None = None
     maximum_pause_ms = int(tts_cfg.get("maximum_pause_ms", 2000))
     prompt = _build_llm_prompt(units, capabilities, maximum_pause_ms, glossary)
     endpoint = _load_plan_endpoint()
-    max_tokens = min(32768, 2048 + len(units) * 180)
+    # 注意：deepseek v4 系列带推理 token，思考同样吃 max_tokens 预算（实测占 60%+）。
+    # 原公式 2048 + units*180 在 115 个句子单元时给 22748，全被推理吃掉导致
+    # finish_reason=length + JSON 截断。按推理开销重新配比并抬高一档上限。
+    max_tokens = min(65536, 4096 + len(units) * 400)
     result = chat(
         endpoint,
         [{"role": "user", "content": prompt}],
