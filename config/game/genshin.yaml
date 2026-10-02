@@ -28,7 +28,7 @@ subtitle:
   font_name: LXGW WenKai Medium
   font_size: 42             # 基准 PlayRes 1280x720
   outline: 2.5              # 白字黑描边
-  margin_v: 130             # 底部边距：字幕底边 y885，紧贴游戏原文字(y890~913)上沿（原 40 太靠下）
+  margin_v: 90              # 底部边距：字幕带 y882~945，让开黄色名字(下沿897)且压住原生白字(904~929)
   play_res: [1280, 720]
   max_chars_per_screen: 18  # 每屏最大字数，语速联动
   # overlay 画面适配：放大 1.024、上移 12.96，让右下角 UID 刚好整行出画。
