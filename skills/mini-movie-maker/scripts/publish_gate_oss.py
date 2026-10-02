@@ -8,6 +8,13 @@
      对象改 public-read 会被拒绝 —— 所以只能走【签名 URL】，把 html 里的路径改写成绝对签名 URL。
   3. OSS 签名把 HTTP 方法算进签名串：GET 签的 URL 发 HEAD 一定 403。
      验证链接时必须用 GET（curl -r 0-255 走 Range GET），否则会误判为失败。
+  4. OSS 默认域名访问 .html 会被阿里云【强制下载】（响应带 x-oss-force-download: true
+     + Content-Disposition: attachment）。这是平台策略不是桶设置：2017/10/01 之后创建的
+     Bucket 都这样，对象级 Content-Disposition:inline 和签名里的 --query-param 覆盖
+     全被压制，客户端无法绕过，官方解法只有绑定自定义域名（需 ICP 备案）。
+     所以这里给出的是「下载链接」：用户下载后用浏览器打开即可完整显示 —— 因为图片用的是
+     绝对签名 URL，不依赖 html 的存放位置，换台机器、换个目录照样能看图。
+     自检时不要用 HTML 是否会渲染来判断成功，要看 GET 是否 200/206 + 内嵌 URL 是否 0 残留。
 
 用法：
   python3 publish_gate_oss.py <task_dir> [--bucket mini-movie] [--endpoint oss-cn-beijing.aliyuncs.com]

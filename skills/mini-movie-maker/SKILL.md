@@ -82,7 +82,7 @@ ln -s ../genshin-1.6-midsummer-islands/narration_segments tasks/genshin-1.6-mids
 
 **跑长阶段、换素材、或遇阶段失败前，先读 [`references/troubleshooting.md`](references/troubleshooting.md)** —— 10 条实战规则（长任务必须脱会话运行、ASR 强制离线、`global_timeline.json` 是缓存、覆盖率即素材完整性判据、BGM duck 区间合并等），照着做能省掉整轮返工。
 
-**闸口板子要发给用户（不在本机看）时，跑 `python3 scripts/publish_gate_oss.py <task_dir>`** —— `storyboard.html` 内嵌的帧图是相对数据根的路径（`../../workspace/<key>/frames/…`），单独把 html 发出去必然是**一片空图**：脚本会①把引用到的帧图按**数据根结构**传到 OSS，②把 html 里的路径改写成 10 年**签名 URL**，③回传可直接打开的链接（本地原 html 不动）。三个必须知道的点：桶开了「阻止公共访问」（`Put public object acl is not allowed`）→ 对象改 public-read 会被拒，只能走签名 URL；**验证链接只能用 GET，HEAD 一定 403**（OSS 签名把 HTTP 方法算进签名串），脚本自检已用 `curl -r` Range GET；相对路径结构 = 数据根结构，所以 html 放 `tasks/<task>/`、帧图放 `workspace/<key>/frames/` 时 `../../` 在 OSS 上同样成立。
+**闸口板子要发给用户（不在本机看）时，跑 `python3 scripts/publish_gate_oss.py <task_dir>`** —— `storyboard.html` 内嵌的帧图是相对数据根的路径（`../../workspace/<key>/frames/…`），单独把 html 发出去必然是**一片空图**：脚本会①把引用到的帧图按**数据根结构**传到 OSS，②把 html 里的路径改写成 10 年**签名 URL**，③回传可直接打开的链接（本地原 html 不动）。三个必须知道的点：桶开了「阻止公共访问」（`Put public object acl is not allowed`）→ 对象改 public-read 会被拒，只能走签名 URL；**验证链接只能用 GET，HEAD 一定 403**（OSS 签名把 HTTP 方法算进签名串），脚本自检已用 `curl -r` Range GET；相对路径结构 = 数据根结构，所以 html 放 `tasks/<task>/`、帧图放 `workspace/<key>/frames/` 时 `../../` 在 OSS 上同样成立。**OSS 默认域名访问 .html 会被阿里云强制下载**（响应带 `x-oss-force-download: true`，2017/10/01 之后创建的 Bucket 全部如此，是平台策略不是桶设置，对象级 `Content-Disposition:inline` 与签名 `--query-param` 覆盖都会被压制）→ 发出去的必然是**下载链接**，用户下载后用浏览器打开即可完整显示（图片是绝对签名 URL，不依赖 html 存放位置）。**分镜板窄屏排版**：模板曾因 `.clip` 无 `flex-wrap` + 帧图固定 `148px` 在手机 390px 视口撑爆整行，把 `.body` 挤成 0 宽（正文竖排）、后续片段被推出屏幕右侧，已在模板加 `flex-wrap` + `@media(max-width:760px)` 响应式（帧图与文案上下排列、帧图自适应屏宽）修复。
 
 ## 剪辑前配置确认（铁律：必须逐项询问）
 
