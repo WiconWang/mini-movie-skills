@@ -18,10 +18,10 @@
   .counts { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
   .counts .badge { font-size:11px; }
   main#board { display:flex; flex-direction:column; gap:14px; }
-  .clip { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; display:flex; gap:16px; box-shadow:0 2px 8px rgba(0,0,0,.35); transition:border-color .15s; }
+  .clip { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; display:flex; gap:16px; flex-wrap:wrap; box-shadow:0 2px 8px rgba(0,0,0,.35); transition:border-color .15s; }
   .clip:hover { border-color:#3a4150; }
   .clip.raw_insert { border-color:var(--gold); background:linear-gradient(180deg, rgba(224,164,88,.07), transparent 30%), var(--card); }
-  .frames { display:flex; gap:6px; flex-shrink:0; align-items:flex-start; }
+  .frames { display:flex; gap:6px; flex-shrink:0; align-items:flex-start; flex-wrap:wrap; max-width:100%; }
   .frames img { width:148px; height:83px; object-fit:cover; object-position:center; border-radius:8px; display:block; background:#000; outline:1px solid var(--line); }
   .frames img:first-child { outline-color:var(--accent); }
   .body { flex:1; min-width:0; }
@@ -58,6 +58,18 @@
   #dirty { color:var(--gold); font-size:12px; font-weight:600; }
   #est { color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
   .empty { color:var(--dim); padding:30px; text-align:center; }
+
+  /* 窄屏（手机）：帧图与文案改上下排列，帧图按屏宽自适应。
+     原样式是固定 148px×3~4 张 + flex-shrink:0，在 390px 视口里撑爆整行，
+     把 .body 挤成 0 宽（正文变竖排），并把后续片段推出屏幕右侧（左侧留白）。 */
+  @media (max-width: 760px) {
+    body { padding:14px 12px 90px; }
+    .clip { flex-direction:column; gap:10px; padding:12px; }
+    .frames { width:100%; flex-wrap:wrap; }
+    .frames img { flex:1 1 30%; width:auto; height:auto; aspect-ratio:16/9; min-width:0; }
+    .headrow { gap:6px; }
+    #exportbar { padding:10px 14px; }
+  }
 </style>
 </head>
 <body>
