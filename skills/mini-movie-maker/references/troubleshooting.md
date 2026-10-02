@@ -215,3 +215,35 @@ response-content-disposition:inline` ✗ 同样被压制。官方唯一解法是
 ②语速常量 `4.5` 字/秒（=270 字/分，过期值）把成片时长**高估 13%**（15:17.7 vs 实际 13:21）
 → 统一改 `5.12`（=307 字/分），涉及 `stage_select` / `stage_select_raw` / `cli` / `reviewer` /
 前端模板 fallback 共 **5 处**（这类"同一个常量抄了 5 份只改了 1 份"的坑以前 narrate 也踩过）。
+
+## 14. DeepSeek v4 系列都带推理 token：max_tokens 给小了会"返回空内容"
+
+`deepseek-v4-flash` 与 `deepseek-v4-pro` 的响应 usage 里都有
+`completion_tokens_details.reasoning_tokens` —— **思考过程同样消耗 max_tokens 预算**。
+探针或小样若把 `max_tokens` 设得很小（如 32），会出现：
+
+```
+http_status: 200, finish_reason: "length",
+completion_tokens: 32, reasoning_tokens: 32, content: ""
+```
+
+→ 管线抛 `EmptyContent`，**看起来像 key 失效或权限问题，其实是预算被思考吃光了**。
+排查顺序：先看 `logs/llm_calls.jsonl` 里的 `finish_reason` 与 `reasoning_tokens`，
+不要一报 EmptyContent 就换 key。
+
+推论：vision 路由的 `max_tokens: 1500` 要同时装推理 + 描述，**偶发 EmptyContent 的成因之一**
+就是被推理吃光（表现是少量镜头失败，可重跑；失败率上升就先调大该路由 max_tokens）。
+
+成本提示：推理 token 按**输出**计费 —— prod narrate 单次 4,100 字正文对应 31,717 output
+tokens，大头是推理，比按字数估算贵得多。
+
+## 15. 账单对不上时怎么查（LLM 用量审计）
+
+- **每次调用**都记在 `logs/llm_calls.jsonl`：`ts / route / profile / model / base_url_host /
+  prompt_chars / estimated_prompt_tokens / max_tokens / attempt / http_status / usage`。
+- **哪个路由用哪把 key** 在 `.env` 的 `MMM_{ROUTE}_API_KEY` —— **不同路由可以挂在不同的 key
+  /账号上**，账单自然分散在不同账号。曾出现「查不到 deepseek-v4-pro 用量」，根因就是
+  narrate_high 当时用的是另一把 key（现三条路由已统一）。
+- **哪个模型负责哪一步**：`stage_narrate.py` 里 `load_endpoint("narrate_high" if profile ==
+  "prod" else "narrate_low")` —— 即**解说稿（故事复述）这一步**：prod 用 `deepseek-v4-pro`、
+  dry 用 `deepseek-v4-flash`；vision 独立走 vision 路由。
