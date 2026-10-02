@@ -330,7 +330,7 @@ def run(work_dir: Path, asset_key: str, *, timeline_name: str = "global_timeline
         task_id=asset_key,
         title=f"{asset_key} 原声高光分镜板",
         frames_base=DATA_ROOT,
-        chars_per_sec=4.5,
+        chars_per_sec=5.12,   # 与 stage_select.DEFAULT_CHARS_PER_SEC 一致（实测 307 字/分）
         tts_speed=1.0,
         embed_frames=False,
     )

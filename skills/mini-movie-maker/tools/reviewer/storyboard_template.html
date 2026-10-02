@@ -105,11 +105,13 @@ function parseTime(v){
 }
 function clipDuration(c){
   if (c.keep_audio) return Math.max(c.end - c.start, 0.5);
-  const cps = DATA.chars_per_sec || 4.5;
+  const cps = DATA.chars_per_sec || 5.12;   // 4.5 是过期值，会高估成片时长约 13%；实测 prod TTS = 307 字/分
   const spd = DATA.tts_speed || 1;
   return Math.max((c.text || '').length / (cps * spd), 1.0) + 0.3;
 }
 function estDuration(){ return edl.clips.reduce((a,c)=>a+clipDuration(c),0); }
+// 只在任务认领了多个素材时才显示素材编号 —— 单素材时它会被误读成「第 N 段」
+function multiAsset(){ return new Set((edl.clips||[]).map(x=>x.asset_id)).size > 1; }
 function refreshEst(){
   document.getElementById('est').textContent = `预计成片 ${fmt(estDuration())}`;
   document.getElementById('dirty').textContent = dirty ? '● 有未导出修改' : '';
@@ -146,7 +148,7 @@ function render(){
     div.innerHTML = `
       <div class="frames">${(c.frames||[]).map(f=>`<img src="${f}" loading="lazy">`).join('') || '<span class="meta">无帧</span>'}</div>
       <div class="body">
-        <div class="headrow">${badge}<span class="time">${c.asset_id} · ${fmt(c.start)} → ${fmt(c.end)}（源 ${(c.end-c.start).toFixed(1)}s${c.keep_audio ? '' : ` · 解说约 ${clipDuration(c).toFixed(1)}s`}）</span></div>
+        <div class="headrow">${badge}<span class="time">第 ${i+1} 段 · ${fmt(c.start)} → ${fmt(c.end)}（源 ${(c.end-c.start).toFixed(1)}s${c.keep_audio ? '' : ` · 解说约 ${clipDuration(c).toFixed(1)}s`}${multiAsset() ? ` · 素材#${c.asset_id}` : ''}）</span></div>
         <div class="narr">${renderNarr(c)}</div>
         <div class="ops">
           <button onclick="toggleCands(${i})">换镜头</button>

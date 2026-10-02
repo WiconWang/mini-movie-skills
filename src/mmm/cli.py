@@ -495,7 +495,7 @@ def run_select(
     path: str = typer.Option("", "--path", help="直接给 workspace 路径（冒烟测试用，跳过台账）"),
     task: str = typer.Option("", "--task", help="任务模式：读 tasks/{task_id} 的 narration + 全局时间轴"),
     mode: str = typer.Option("", "--mode", help="narrate（A 解说选片，缺省）/ raw（B 原声高光直拼，自动跑 low-only 标注）"),
-    chars_per_sec: float = typer.Option(4.5, "--chars-per-sec", help="TTS 语速估算（字/秒）"),
+    chars_per_sec: float = typer.Option(5.12, "--chars-per-sec", help="TTS 语速估算（字/秒，实测 307 字/分）"),
     force: bool = typer.Option(False, "--force", help="忽略断点续跑守卫，强制重跑"),
 ) -> None:
     """阶段6：选片段 + 自检回环 + 分镜板。完成后进入闸口2，等待人工确认。

@@ -18,7 +18,7 @@ from pathlib import Path
 from . import reviewer
 
 CLASS_RANK = {"E": 0, "D": 1, "C": 2, "B": 3, "A": 4, "X": 5}
-DEFAULT_CHARS_PER_SEC = 4.5
+DEFAULT_CHARS_PER_SEC = 5.12   # 实测 prod TTS = 307 字/分（MiniMax speech-2.8-hd, speed 1.1）；旧值 4.5 会高估成片时长约 13%
 
 
 def _overlaps(a0: float, a1: float, b0: float, b1: float) -> bool:

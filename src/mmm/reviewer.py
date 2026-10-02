@@ -58,7 +58,7 @@ def _resolve_frames(clip: dict, base: Path, out_dir: Path,
 
 def build_storyboard(edl: dict, out_path: Path, *, task_id: str, title: str = "",
                      target_minutes: float | None = None, frames_base: Path | None = None,
-                     chars_per_sec: float = 4.5, tts_speed: float = 1.0,
+                     chars_per_sec: float = 5.12, tts_speed: float = 1.0,
                      embed_frames: bool = True) -> Path:
     """注入数据生成分镜板。
 
