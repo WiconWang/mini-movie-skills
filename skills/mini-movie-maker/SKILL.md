@@ -83,6 +83,8 @@ ln -s ../genshin-1.6-midsummer-islands/narration_segments tasks/genshin-1.6-mids
 **跑长阶段、换素材、或遇阶段失败前，先读 [`references/troubleshooting.md`](references/troubleshooting.md)** —— 10 条实战规则（长任务必须脱会话运行、ASR 强制离线、`global_timeline.json` 是缓存、覆盖率即素材完整性判据、BGM duck 区间合并等），照着做能省掉整轮返工。
 
 **闸口板子交付（闸口 2/3 审阅用）：跑 `python3 scripts/publish_gate_oss.py <task_dir>`**
+- `scripts/preview_subtitle_position.py --task-dir <task_dir>`：字幕纵向位置预览。改任务的 `subtitles.ass`（MarginV 字段索引 **21**）出 5 秒多档样片，并把「说话人名字下沿 / 原生白字范围」参考线画进画面。**换位置前先跑它，别直接花 15 分钟整片重渲。**
+- `scripts/measure_game_ui_bands.py --task-dir <task_dir> --ruler`：量游戏 UI 纵向位置（说话人名字 / 原生对白 / 底部按钮），为 `margin_v` 定标。换游戏或换录制源时先跑它，再用 `--ruler` 出的标尺图人工复核绝对坐标。
 
 - **ossutil / 凭证 / bucket 通了** → 上传必要文件（帧图按数据根结构 + 改写路径后的 html），**回传自定义域名的链接给用户** —— `http://mm.wangweiqiang.com`（已 CNAME 到 `mini-movie` 桶，浏览器可直接渲染，脚本 `--domain` 默认就是它），并把地址写入 `<task_dir>/board_link.txt` 方便以后找回。本地原 html 不动。
 - **任一不通** → **不上传、不硬推 OSS**，打印本地 `storyboard.html` 绝对路径让用户在本机打开（exit 2）。
