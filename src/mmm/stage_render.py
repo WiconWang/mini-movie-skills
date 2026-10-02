@@ -80,9 +80,9 @@ def _render_overlay_mask_png(mask_cfg: dict, out_w: int, out_h: int,
     """
     if not mask_cfg or not mask_cfg.get("enabled"):
         return False
-    x0, x1 = mask_cfg.get("x", [210, 1710])
-    y0, y1 = mask_cfg.get("y", [860, 1080])
-    blur_sigma = mask_cfg.get("blur_sigma", 20)
+    x0, x1 = mask_cfg.get("x", [0, 1920])
+    y0, y1 = mask_cfg.get("y", [800, 1080])
+    blur_sigma = mask_cfg.get("blur_sigma", 3)
     feather = mask_cfg.get("feather_top", mask_cfg.get("feather_side", 34))
     w, h = int(x1 - x0), int(y1 - y0)
     if w <= 0 or h <= 0:
@@ -99,7 +99,7 @@ def _render_overlay_mask_png(mask_cfg: dict, out_w: int, out_h: int,
     return out_path.exists()
 
 
-def _overlay_mask_filter(blur_sigma: float = 20,
+def _overlay_mask_filter(blur_sigma: float = 3,
                          enable_expr: str = "") -> str:
     """构造 overlay 底部模糊遮罩的 -filter_complex 链（mask PNG 作第二输入）。
 
@@ -344,7 +344,7 @@ def _mux_srt(video: Path, srt: Path, out: Path) -> None:
 
 def _burn_subtitles(video: Path, ass: Path, out: Path,
                     mask_png: Path | None = None,
-                    blur_sigma: float = 20,
+                    blur_sigma: float = 3,
                     mask_cfg: dict | None = None,
                     enable_expr: str = "",
                     out_w: int = DEFAULT_OUT_W, out_h: int = DEFAULT_OUT_H) -> None:
@@ -516,7 +516,7 @@ def run(work_dir: Path, videos: dict[str, Path], out_path: Path | None = None,
                     mask_png = None   # 生成失败则回退无遮罩（不中断渲染）
             _burn_subtitles(raw_path, Path(subs["ass"]), tmp_out,
                             mask_png=mask_png,
-                            blur_sigma=overlay_mask.get("blur_sigma", 20),
+                            blur_sigma=overlay_mask.get("blur_sigma", 3),
                             enable_expr=enable_expr,
                             out_w=out_w, out_h=out_h)
             raw_path.unlink(missing_ok=True)

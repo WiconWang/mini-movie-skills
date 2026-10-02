@@ -220,7 +220,7 @@ mmm run render --path <workspace> --video <视频> [--bgm "a.mp3;b.mp3"] [--subt
 
 `config/game/{game}.yaml`（game code：genshin/zzz/starrail/wave/endfield）控制分级表、命名模板、subtitle_mode、TTS 音色，以及 overlay 字幕样式与画面适配。其中：
 
-- `subtitle`：overlay 字幕样式（`font_name`/`font_size`/`outline`/`margin_v`）+ 画面适配 `overlay_transform`（放大裁 UID）+ 底部羽化模糊遮罩 `overlay_mask`（含 `x`/`y`/`blur_sigma`/`feather_top`）。认领时经 `catalog.claim_task` 继承到 task.json，任务/片段可覆盖。
+- `subtitle`：overlay 字幕样式（`font_name`/`font_size`/`outline`/`margin_v`）+ 画面适配 `overlay_transform`（放大裁 UID）+ 底部羽化模糊遮罩 `overlay_mask`（含 `x`/`y`/`blur_sigma`/`feather_top`）。认领时经 `catalog.claim_task` 继承到 task.json，任务/片段可覆盖。**遮罩默认值已固化：`x=[0,1920]`、`y=[800,1080]`、`blur_sigma=3`**（σ=20 糊成一片被用户否决；标定依据见 `references/troubleshooting.md` §16）。
 - `subtitle_mode`：`overlay`（默认，含底部模糊遮罩）/ `letterbox`（黑边电影画幅，未实现）。
 - 字体文件位于 `assets/fonts/`（当前仅 `LXGWWenKai-Medium.ttf`）。渲染时通过运行时临时 fontconfig（`FONTCONFIG_FILE`）命中，不注册系统字体，保证跨机器可复现。
 
