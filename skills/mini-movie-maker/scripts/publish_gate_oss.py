@@ -208,6 +208,10 @@ def main() -> int:
     link = sign(f"tasks/{task.name}/{a.html}")
     code, size = get(link, rng="0-200")
     print(f"\n⑥ 自检（GET ✓ 不是 HEAD）：HTTP {code}  {size} bytes")
+    # 可用链接落在任务目录，方便随时找回（/tmp 会被清；地址很长记不住）
+    if code in ("200", "206"):
+        (task / "board_link.txt").write_text(link + "\n", encoding="utf-8")
+        print(f"   地址已记录：{task / 'board_link.txt'}")
     print(f"\n{'='*70}\n板子链接（10 年有效）：\n{link}\n{'='*70}")
     pathlib.Path("/tmp/mmm-gate-oss/last_link.txt").write_text(link)
     return 0 if code in ("200", "206") and left == 0 else 1

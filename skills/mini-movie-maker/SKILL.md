@@ -82,7 +82,15 @@ ln -s ../genshin-1.6-midsummer-islands/narration_segments tasks/genshin-1.6-mids
 
 **跑长阶段、换素材、或遇阶段失败前，先读 [`references/troubleshooting.md`](references/troubleshooting.md)** —— 10 条实战规则（长任务必须脱会话运行、ASR 强制离线、`global_timeline.json` 是缓存、覆盖率即素材完整性判据、BGM duck 区间合并等），照着做能省掉整轮返工。
 
-**闸口 2/3 的板子要发给用户时，跑 `python3 scripts/publish_gate_oss.py <task_dir>`** —— 帧图按数据根结构传 OSS、html 路径改写成签名 URL 后回传链接（本地原 html 不动）。**脚本会先预检 bucket**：ossutil / 凭证 / bucket 任一不可用就**跳过上传、打印本地 html 路径让用户本机打开**（exit 2），绝不硬推一个打不开的远程壳。踩坑细节（平台强制下载、窄屏排版、段号与语速常量）见 [`references/troubleshooting.md`](references/troubleshooting.md) 第 11~13 条。
+**闸口板子交付（闸口 2/3 审阅用）：跑 `python3 scripts/publish_gate_oss.py <task_dir>`**
+
+- **ossutil / 凭证 / bucket 通了** → 上传必要文件（帧图按数据根结构 + 改写路径后的 html），**回传自定义域名的链接给用户** —— `http://mm.wangweiqiang.com`（已 CNAME 到 `mini-movie` 桶，浏览器可直接渲染，脚本 `--domain` 默认就是它），并把地址写入 `<task_dir>/board_link.txt` 方便以后找回。本地原 html 不动。
+- **任一不通** → **不上传、不硬推 OSS**，打印本地 `storyboard.html` 绝对路径让用户在本机打开（exit 2）。
+
+地址格式：`http://mm.wangweiqiang.com/tasks/<task_id>/storyboard.html?Expires=…&OSSAccessKeyId=…&Signature=…`
+（桶私有，**必须带签名**，裸路径 403；签名与域名无关，换域名不用重签）
+
+踩坑细节（平台强制下载、窄屏排版、段号与语速常量）见 [`references/troubleshooting.md`](references/troubleshooting.md) 第 11~13 条。
 
 ## 剪辑前配置确认（铁律：必须逐项询问）
 
