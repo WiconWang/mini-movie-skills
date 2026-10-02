@@ -147,3 +147,61 @@ B 模式下每条 EDL 片段都是 raw_insert 且在成片轴上首尾相接，
 | 50 分钟级（完整实录）| `["great"]` | 120 句 ≈ 11.5 分钟 |
 
 完整实录素材下仍用默认的 `great+good`，会剪出 25 分钟以上。
+
+---
+
+## 11. 闸口板子发出去：先预检 bucket，不可用就转本地交付（铁律）
+
+`storyboard.html` 内嵌的帧图是**相对数据根**的路径（`../../workspace/<key>/frames/…`），
+单独把 html 发出去必然是**一片空图**。发布用：
+
+```bash
+python3 skills/mini-movie-maker/scripts/publish_gate_oss.py <task_dir>
+```
+
+脚本做三件事：①把引用到的帧图按**数据根结构**传 OSS；②把 html 里的路径改写成 10 年
+**签名 URL**；③回传链接。本地原 html 不动。
+
+**先预检，再发布。** 脚本已内置 `preflight()`：ossutil 在不在？凭证在不在？
+`ossutil ls oss://<bucket>/` 通不通？任一不过 → **跳过上传，打印本地 html 绝对路径**，
+提示用户本机打开（本地 `../` 相对路径能解析，图片照常显示），退出码 **2**。
+**别给用户一个打不开或空图的远程壳。**
+
+- 不能改用 public-read：桶开了「阻止公共访问」，`Put public object acl is not allowed`
+- 验证必须用 GET：**GET 签的 URL 发 HEAD 一定 403**（签名含 HTTP 方法），曾因此误判"全部 403"；脚本自检用 `curl -r` Range GET
+- 退出码：`0` 成功 ｜ `2` 预检不过、已转本地交付 ｜ `1` 发布后自检失败
+
+## 12. OSS 默认域名访问 .html 一定被强制下载（平台策略，非桶设置）
+
+症状：链接能下文件，但**浏览器不渲染**，响应头带 `x-oss-force-download: true` +
+`Content-Disposition: attachment`。
+
+根因是阿里云平台策略：**2017/10/01 之后创建的 Bucket**，用 OSS 默认域名访问 `.html`
+（或 `Content-Type: text/html`）一律强制下载。**不是桶里能关的开关**，客户端也绕不过 ——
+对象级 `Content-Disposition: inline` ✗ 被压制，签名 `--query-param
+response-content-disposition:inline` ✗ 同样被压制。官方唯一解法是**绑定自定义域名**（需 ICP 备案）。
+
+所以发给用户的就是**下载链接**：下载后用浏览器打开即可完整显示，因为图片走**绝对签名 URL**，
+不依赖 html 所在位置（换机器、换目录、从飞书下载后打开都能出图）。
+自检**不要用"浏览器能否渲染"判断成功**，要看 GET 是否 200/206 + 是否 0 条残留相对路径。
+
+## 13. 分镜板窄屏排版：flex 不换行会把正文挤成 0 宽
+
+用户实测（手机 390px）：**从第二组起内容被推出屏幕右侧、左侧留白、正文竖排成一列一字**。
+
+不是 float 问题（模板本来就是 flexbox），根因是 `.clip` 没有 `flex-wrap` +
+`.frames { flex-shrink:0 }` + 帧图固定 `148px` → 3~4 张合计 444~592px 撑爆 390px 视口，
+`.body`（`flex:1`）被压到 **0 宽**。已修（**勿回退**）：两处加 `flex-wrap`，并加
+`@media (max-width:760px)` 让帧图与文案**上下排列**、帧图 `flex:1 1 30%` +
+`aspect-ratio:16/9` 自适应屏宽。改模板后务必真机量一遍（CDP `Emulation.setDeviceMetricsOverride`）：
+
+| 视口 | 期望 |
+|------|------|
+| 390px | `hOverflow=0`，`framesW == bodyW`（各 340），`stacked=true` |
+| 1280px | `hOverflow=0`，frames 456px + body 722px **左右并排**（原设计） |
+
+同批修掉的两个显示问题：①段号显示的是 `c.asset_id`（素材编号）而非段号，单素材任务下 22 段
+全印同一个数字，被误读成「第 N 段」→ 改为「第 N 段」，素材编号仅多素材时以「素材#N」显示；
+②语速常量 `4.5` 字/秒（=270 字/分，过期值）把成片时长**高估 13%**（15:17.7 vs 实际 13:21）
+→ 统一改 `5.12`（=307 字/分），涉及 `stage_select` / `stage_select_raw` / `cli` / `reviewer` /
+前端模板 fallback 共 **5 处**（这类"同一个常量抄了 5 份只改了 1 份"的坑以前 narrate 也踩过）。

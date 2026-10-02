@@ -20,6 +20,10 @@
   python3 publish_gate_oss.py <task_dir> [--bucket mini-movie] [--endpoint oss-cn-beijing.aliyuncs.com]
   # task_dir 例：/home/share/mini-movie-materials/tasks/genshin-1.5-cuishizhiyuhu
   # 数据根从 task_dir 往上两级推断（与 html 里的 ../../ 语义一致）
+
+退出码：0 成功 ｜ 2 预检未过、已降级为本地交付（不硬推 OSS）｜ 1 发布后自检失败
+流程：⓪ 预检 bucket → ① 解析 html 里的帧图 → ② 校验本地存在 → ③ 按数据根结构上传
+      → ④ 改写 html 路径为签名 URL 并上传 → ⑤ 回传可下载链接 → ⑥ GET 自检
 """
 from __future__ import annotations
 
@@ -41,6 +45,50 @@ from concurrent.futures import ThreadPoolExecutor
 
 IMG_RE = re.compile(r'"((?:\.\./)+workspace/[^"]+\.(?:jpg|jpeg|png|webp))"', re.I)
 TEN_YEARS = 315_360_000
+
+
+def preflight(ossutil: str, bucket: str, endpoint: str) -> tuple[bool, str]:
+    """发布前先探 target bucket 是否可用。
+
+    返回 (可用, 原因)。不可用时调用方【不得】强推 OSS —— 应降级为本地交付，
+    把本地 html 路径告诉用户，让他在本机打开（本地打开时 ../ 相对路径能解析，
+    图片照常显示）。强制上传只会给用户一个打不开或空图的壳。
+    """
+    if not (shutil.which(ossutil) or pathlib.Path(ossutil).exists()):
+        return False, "未找到 ossutil（不在 PATH，且 ~/.local/bin/ossutil 不存在）"
+    cfg = pathlib.Path.home() / ".ossutilconfig"
+    if not cfg.exists():
+        return False, f"未找到 {cfg}（没有 OSS 凭证）"
+    try:
+        r = subprocess.run([ossutil, "ls", f"oss://{bucket}/", "-e", endpoint, "-d", "-s"],
+                           capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        return False, "网络超时（90s 内连不上 OSS / bucket）"
+    out = (r.stdout or "") + (r.stderr or "")
+    if r.returncode == 0 and "Error" not in out:
+        return True, "ok"
+    low = out.lower()
+    if "nosuchbucket" in low:
+        return False, f"bucket「{bucket}」不存在"
+    if "accessdenied" in low or "access denied" in low:
+        return False, f"bucket「{bucket}」无访问权限（凭证或授权问题）"
+    if any(k in low for k in ("could not resolve", "connection", "timed out", "timeout", "network")):
+        return False, "网络不通（解析不到或连不上 OSS）"
+    tail = [l for l in out.strip().splitlines() if l.strip()]
+    return False, f"bucket 不可用：{tail[-1][:140] if tail else '未知错误'}"
+
+
+def _local_fallback(local_html: pathlib.Path, why: str) -> int:
+    """OSS 不可用时的交付方式：让用户到本地看，不要硬塞一个打不开的远程链接。"""
+    print(f"\n{'='*70}")
+    print(f"⚠️  OSS 预检未通过：{why}")
+    print("    → 已跳过上传（不强推 OSS）。请在本机打开这个文件查看分镜板：")
+    print(f"\n      {local_html}\n")
+    print("    本地打开时帧图走 ../ 相对路径（相对数据根），能正常显示 ✓")
+    print("    若需要发给别人：先修好 OSS（bucket / 凭证 / 网络）再重跑本脚本；")
+    print("    或改用飞书附件（注意单文件 >20MB 会被拒）。")
+    print(f"{'='*70}")
+    return 2
 
 
 def load_creds() -> tuple[str, str]:
@@ -96,6 +144,14 @@ def main() -> int:
         sys.exit(f"找不到 {html}")
 
     ossutil = shutil.which("ossutil") or str(pathlib.Path.home() / ".local/bin/ossutil")
+
+    # ⓪ 预检：bucket 连不上/不存在/无权限 → 不硬推 OSS，直接转本地交付
+    if not a.no_upload:
+        ok, why = preflight(ossutil, a.bucket, a.endpoint)
+        print(f"⓪ OSS 预检：{'✓ 通过' if ok else '✗ ' + why}")
+        if not ok:
+            return _local_fallback(html, why)
+
     ak, sk = load_creds()
     sign = signer(a.bucket, a.endpoint, ak, sk, int(time.time()) + TEN_YEARS)
 
