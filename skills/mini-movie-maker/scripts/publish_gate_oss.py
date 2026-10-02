@@ -23,7 +23,10 @@
 
 退出码：0 成功 ｜ 2 预检未过、已降级为本地交付（不硬推 OSS）｜ 1 发布后自检失败
 流程：⓪ 预检 bucket → ① 解析 html 里的帧图 → ② 校验本地存在 → ③ 按数据根结构上传
-      → ④ 改写 html 路径为签名 URL 并上传 → ⑤ 回传可下载链接 → ⑥ GET 自检
+      → ④ 改写 html 路径为签名 URL 并上传 → ⑤ 回传链接 → ⑥ GET 自检
+域名：html 链接默认走 http://mm.wangweiqiang.com（已 CNAME 到 mini-movie 桶）—— 自定义域名
+      不命中 OSS 的 .html 强制下载策略，浏览器能直接渲染；换域名用 --domain / MMM_OSS_DOMAIN。
+      帧图仍走 https://<bucket>.<endpoint>（https 更稳，且 <img> 不受 disposition 影响）。
 """
 from __future__ import annotations
 
@@ -104,8 +107,13 @@ def load_creds() -> tuple[str, str]:
     sys.exit("~/.ossutilconfig 里没有 accessKeyID/accessKeySecret")
 
 
-def signer(bucket: str, endpoint: str, ak: str, sk: str, expires: int):
-    base = f"https://{bucket}.{endpoint}"
+def signer(bucket: str, endpoint: str, ak: str, sk: str, expires: int, domain: str = ""):
+    """domain 非空时用自定义域名出链接 —— 绕开 OSS 默认域名对 .html 的强制下载。
+
+    注意：签名只覆盖「资源路径 + 过期时间 + HTTP 方法」，与 Host 无关，
+    所以同一个签名换域名照样有效（已验证：自定义域名 200、默认域名强制下载）。
+    """
+    base = domain.rstrip("/") if domain else f"https://{bucket}.{endpoint}"
 
     def sign(key: str, verb: str = "GET") -> str:
         res = f"/{bucket}/{key}"
@@ -133,6 +141,9 @@ def main() -> int:
     ap.add_argument("task_dir")
     ap.add_argument("--bucket", default=os.environ.get("MMM_OSS_BUCKET", "mini-movie"))
     ap.add_argument("--endpoint", default=os.environ.get("MMM_OSS_ENDPOINT", "oss-cn-beijing.aliyuncs.com"))
+    ap.add_argument("--domain", default=os.environ.get("MMM_OSS_DOMAIN", "http://mm.wangweiqiang.com"),
+                    help="自定义域名（默认 http://mm.wangweiqiang.com，已 CNAME 到 mini-movie 桶）："
+                         "自定义域名不会被 OSS 强制下载策略命中，浏览器可直接渲染")
     ap.add_argument("--html", default="storyboard.html")
     ap.add_argument("--no-upload", action="store_true", help="只生成链接，不上传")
     a = ap.parse_args()
@@ -153,7 +164,11 @@ def main() -> int:
             return _local_fallback(html, why)
 
     ak, sk = load_creds()
-    sign = signer(a.bucket, a.endpoint, ak, sk, int(time.time()) + TEN_YEARS)
+    sign = signer(a.bucket, a.endpoint, ak, sk, int(time.time()) + TEN_YEARS, a.domain)
+    if a.domain:
+        print(f"   链接域名：{a.domain.rstrip('/')}（自定义域名，浏览器可直接渲染 ✓）")
+    else:
+        print("   链接域名：OSS 默认域名（.html 会被强制下载，建议配 --domain 或 MMM_OSS_DOMAIN）")
 
     src = html.read_text(encoding="utf-8")
     rels = sorted(set(IMG_RE.findall(src)))

@@ -185,6 +185,16 @@ response-content-disposition:inline` ✗ 同样被压制。官方唯一解法是
 不依赖 html 所在位置（换机器、换目录、从飞书下载后打开都能出图）。
 自检**不要用"浏览器能否渲染"判断成功**，要看 GET 是否 200/206 + 是否 0 条残留相对路径。
 
+**已解：绑定自定义域名。** 用户绑了 `http://mm.wangweiqiang.com`（CNAME → `mini-movie` 桶，
+解析到 `mini-movie.cn-beijing.taihangtop.cn`）。自定义域名**不命中**强制下载策略 → 同一份签名 URL
+换个域名就能**在浏览器直接渲染**（实测 `200` + `Content-Type: text/html`、无 `Content-Disposition`、
+无 `x-oss-force-download`；匿名访问仍 `403` = 桶保持私有 ✓）。脚本已把它设为 `--domain` 默认值
+（可用 `MMM_OSS_DOMAIN` 覆盖）。
+
+两个要点：① 签名只覆盖「资源路径 + 过期时间 + HTTP 方法」，**与 Host 无关**，所以换域名**不用重签**；
+② 帧图仍走 `https://<bucket>.<endpoint>`（https 更稳，且 `<img>` 不受 disposition 影响 —— 实测 175/175 全部加载）。
+当前 `https://mm…` 未配证书（返回 `000`），等上证书后 html 链接同样可换 https。
+
 ## 13. 分镜板窄屏排版：flex 不换行会把正文挤成 0 宽
 
 用户实测（手机 390px）：**从第二组起内容被推出屏幕右侧、左侧留白、正文竖排成一列一字**。
