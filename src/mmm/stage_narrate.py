@@ -12,7 +12,11 @@ from pathlib import Path
 
 from .llm import LLMEndpoint, estimate_tokens, load_endpoint
 
-CHARS_PER_MINUTE = 275
+# 实测语速（MiniMax speech-2.8-hd / Chinese_playful_streamer_nv1，speed 1.1，
+# emotion calm；Edge dry 音色 zh-CN-XiaoyiNeural 实测几乎一致）：
+#   取样 564 字 → 110.31s = 5.11 字/秒 ≈ 307 字/分钟
+# 这个值直接换算提示词的字数目标，偏小会让成片短于 target_minutes。
+CHARS_PER_MINUTE = 307
 SCHEMA = "story_beats_v2"
 
 _LOW_EXTRACTION_INSTRUCTIONS = """1. 【素材边界】只能使用素材索引中出现的信息，不虚构事实。可以在证据支持时标注推测，但必须说明置信度。
@@ -185,7 +189,7 @@ def _narrate_notes(output_dir: Path) -> str:
 def _build_high_direct_prompt(timeline: dict, target_minutes: float, notes: str = "") -> str:
     lines_block, shots_block = _timeline_blocks(timeline)
     target_chars = int(target_minutes * CHARS_PER_MINUTE)
-    return f"""你是剧情向短视频解说撰稿人。请把素材索引写成约 {target_minutes} 分钟（约 {target_chars} 字）的沉浸式故事复盘口播稿。
+    return f"""你是剧情向短视频解说撰稿人。请把素材索引写成约 {target_minutes} 分钟（总字数严格控制在 {target_chars} 字以内）的沉浸式故事复盘口播稿。
 
 讲述人风格：
 {_HIGH_NARRATION_STYLE}
@@ -194,6 +198,7 @@ def _build_high_direct_prompt(timeline: dict, target_minutes: float, notes: str 
 1. 输出 15~30 个叙事单元，覆盖起因、发展、转折和结局，不得遗漏后半段。
 2. 每句必须给出 related_line_ids，只能引用素材中真实存在且非 unvoiced 的台词行 ID。
 3. 不输出时间秒数；时间区间由程序补写。
+4. 全文总字数不得超过 {target_chars} 字 —— 这是硬性上限，超出即需重写；宁可精简文字，也不要为了细节牺牲它。
 
 风格示例只学习表达方式，不复用人物、情节和措辞：
 {_NARRATIVE_EXAMPLE}
@@ -234,7 +239,7 @@ def _build_high_fuse_prompt(segments: list[dict], target_minutes: float, notes: 
             ))
         blocks.append(f"【segment_id={segment['segment_id']}】\n" + "\n".join(beats))
     evidence = "\n\n".join(blocks)
-    return f"""你是短视频解说口播稿总编。下面是同一故事按时间顺序整理的剧情节拍证据，请融合成约 {target_minutes} 分钟（约 {target_chars} 字）的完整口播稿。
+    return f"""你是短视频解说口播稿总编。下面是同一故事按时间顺序整理的剧情节拍证据，请融合成约 {target_minutes} 分钟（总字数严格控制在 {target_chars} 字以内）的完整口播稿。
 
 讲述人风格：
 {_HIGH_NARRATION_STYLE}
@@ -245,6 +250,7 @@ def _build_high_fuse_prompt(segments: list[dict], target_minutes: float, notes: 
 3. 输出 15~30 个叙事单元，覆盖所有视频的核心情节和结局。
 4. 每句必须给出 related_beat_ids，只能引用证据中实际存在的 segment_id 与 beat id；引用不能为空。
 5. 不输出时间秒数。
+6. 全文总字数不得超过 {target_chars} 字 —— 这是硬性上限，超出即需重写。
 
 风格示例只学习表达方式：
 {_NARRATIVE_EXAMPLE}
