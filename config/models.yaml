@@ -42,6 +42,22 @@ profiles:
         type: enabled
       reasoning_effort: high
 
+  minimax_cn:
+    protocol: openai_chat_completions
+    temperature_mode: passthrough
+    max_tokens_field: max_tokens
+    # MiniMax 未公开 M3.x 的上下文长度，取保守值，避免预算检查放行后被服务端截断
+    input_context_tokens: 131072
+    safety_margin_tokens: 16384
+    timeout_seconds: 300
+    retry_backoff_seconds: 5
+    capabilities:
+      - text
+      - image
+    # 注意：MiniMax 的 M3 系列是推理模型，reasoning 计入 max_tokens；
+    # 预算不足时返回 content="" + finish_reason=length，思考内容在 reasoning_content 字段。
+    # 因此本档案下各路由的 max_tokens 必须给足（见 routes 段）。
+
   kimi_official:
     protocol: openai_chat_completions
     temperature_mode: omit
@@ -74,7 +90,7 @@ routes:
 
   vision:
     defaults:
-      max_tokens: 4000
+      max_tokens: 12000
       temperature: null
       max_retries: 1
       retryable_status_codes: [429, 500, 502, 503]
